@@ -19,6 +19,9 @@ def get_base_metadata() -> MetaData:
         StreamBlacklistRelation,  # pyright: ignore[reportUnusedImport]
         Stream,  # pyright: ignore[reportUnusedImport]
     )
+    from program.orchestrator import (
+        DebridResolutionCache,  # pyright: ignore[reportUnusedImport]
+    )
     from program.scheduling import (
         ScheduledTask,  # pyright: ignore[reportUnusedImport]
     )

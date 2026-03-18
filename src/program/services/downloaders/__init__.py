@@ -14,6 +14,7 @@ from program.media.state import States
 from program.media.stream import Stream
 from program.media.media_entry import MediaEntry
 from program.media.models import ActiveStream, MediaMetadata
+from program.orchestrator import DebridCacheStatus, debrid_manager
 from program.services.downloaders.models import (
     DebridFile,
     DownloadedTorrent,
@@ -85,16 +86,17 @@ class Downloader(Runner[None, DownloaderBase]):
     ) -> MediaItemGenerator:
         logger.debug(f"Starting download process for {item.log_string} ({item.id})")
 
-
         # Check if all services are in cooldown due to circuit breaker
         now = datetime.now()
 
-        available_services = [
+        cooldown_ready_services = [
             service
             for service in self.initialized_services
             if service.key not in self._service_cooldowns
             or self._service_cooldowns[service.key] <= now
         ]
+
+        available_services = cooldown_ready_services
 
         if not available_services:
             # All services are in cooldown, reschedule for the earliest available time
@@ -119,11 +121,18 @@ class Downloader(Runner[None, DownloaderBase]):
             tried_streams = 0
 
             for stream in sorted_streams:
+                stream_services = (
+                    debrid_manager.select_providers(
+                        cooldown_ready_services, stream.infohash
+                    )
+                    if settings_manager.settings.downloaders.orchestrator.enabled
+                    else available_services
+                )
                 # Try each available service for this stream before blacklisting
                 stream_failed_on_all_services = True
                 stream_hit_circuit_breaker = False
 
-                for service in available_services:
+                for service in stream_services:
                     logger.debug(
                         f"Trying stream {stream.infohash} on {service.key} for {item.log_string}"
                     )
@@ -142,6 +151,14 @@ class Downloader(Runner[None, DownloaderBase]):
                             logger.debug(
                                 f"Stream {stream.infohash} not available on {service.key}"
                             )
+                            if (
+                                settings_manager.settings.downloaders.orchestrator.enabled
+                            ):
+                                debrid_manager.save_resolution(
+                                    stream.infohash,
+                                    service.key,
+                                    DebridCacheStatus.NOT_FOUND,
+                                )
                             continue
 
                         # Try to download using this service
@@ -156,6 +173,15 @@ class Downloader(Runner[None, DownloaderBase]):
                                 "DEBRID",
                                 f"Downloaded {item.log_string} from '{stream.raw_title}' [{stream.infohash}] using {service.key}",
                             )
+                            if (
+                                settings_manager.settings.downloaders.orchestrator.enabled
+                            ):
+                                debrid_manager.save_resolution(
+                                    stream.infohash,
+                                    service.key,
+                                    DebridCacheStatus.CACHED,
+                                )
+                                debrid_manager.mark_provider_healthy(service.key)
 
                             download_success = True
                             stream_failed_on_all_services = False
@@ -171,6 +197,12 @@ class Downloader(Runner[None, DownloaderBase]):
                         self._service_cooldowns[service.key] = (
                             datetime.now() + cooldown_duration
                         )
+                        if (
+                            settings_manager.settings.downloaders.orchestrator.enabled
+                        ):
+                            debrid_manager.mark_provider_error(
+                                service.key, rate_limited=True
+                            )
                         logger.warning(
                             f"Circuit breaker OPEN for {service.key}, trying next service for stream {stream.infohash}"
                         )
@@ -187,6 +219,14 @@ class Downloader(Runner[None, DownloaderBase]):
                         logger.debug(
                             f"Stream {stream.infohash} failed on {service.key}: {e}"
                         )
+                        if (
+                            settings_manager.settings.downloaders.orchestrator.enabled
+                        ):
+                            debrid_manager.save_resolution(
+                                stream.infohash,
+                                service.key,
+                                DebridCacheStatus.ERROR,
+                            )
 
                         if download_result and download_result.id:
                             try:
@@ -236,7 +276,7 @@ class Downloader(Runner[None, DownloaderBase]):
                         )
                     else:
                         logger.debug(
-                            f"Stream {stream.infohash} failed on all {len(available_services)} available service(s), blacklisting"
+                            f"Stream {stream.infohash} failed on all {len(stream_services)} available service(s), blacklisting"
                         )
                         item.blacklist_stream(stream)
 
