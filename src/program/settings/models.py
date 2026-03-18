@@ -70,6 +70,48 @@ class AllDebridModel(Observable):
     api_key: str = Field(default="", description="AllDebrid API key")
 
 
+class DebridOrchestratorRateLimitModel(Observable):
+    realdebrid_per_minute: int = Field(
+        default=200, ge=1, description="Safe Real-Debrid request budget per minute"
+    )
+    debridlink_per_minute: int = Field(
+        default=200, ge=1, description="Safe Debrid-Link request budget per minute"
+    )
+    alldebrid_per_minute: int = Field(
+        default=400, ge=1, description="Safe AllDebrid request budget per minute"
+    )
+    threshold_ratio: float = Field(
+        default=0.8,
+        gt=0,
+        le=1,
+        description="Only use up to this percentage of the configured provider limit",
+    )
+
+
+class DebridOrchestratorModel(Observable):
+    enabled: bool = Field(
+        default=True,
+        description="Enable orchestration controls between scraping and downloader providers",
+    )
+    provider_strategy: Literal["priority", "balanced"] = Field(
+        default="balanced",
+        description="Provider selection strategy for downloader orchestration",
+    )
+    cache_negative_ttl_minutes: int = Field(
+        default=30,
+        ge=1,
+        description="How long to remember negative debrid cache lookups",
+    )
+    shared_queue: bool = Field(
+        default=False,
+        description="Feature flag placeholder for shared orchestration queue scheduling",
+    )
+    rate_limits: DebridOrchestratorRateLimitModel = Field(
+        default_factory=lambda: DebridOrchestratorRateLimitModel(),
+        description="Per-provider orchestration rate-limit settings",
+    )
+
+
 class DownloadersModel(Observable):
     video_extensions: list[str] = Field(
         default_factory=lambda: list[str](["mp4", "mkv", "avi"]),
@@ -105,6 +147,10 @@ class DownloadersModel(Observable):
     all_debrid: AllDebridModel = Field(
         default_factory=lambda: AllDebridModel(),
         description="AllDebrid downloader configuration",
+    )
+    orchestrator: DebridOrchestratorModel = Field(
+        default_factory=lambda: DebridOrchestratorModel(),
+        description="Downloader orchestration configuration",
     )
 
 
