@@ -1,0 +1,200 @@
+name: riven-dev
+
+services:
+  riven:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: riven-orchestrator:dev-local
+    container_name: riven-backend
+    restart: unless-stopped
+    tty: true
+    shm_size: 1024m
+    ports:
+      - "8080:8080"
+    env_file:
+      - ../../.env
+    environment:
+      API_KEY: 0123456789abcdef0123456789abcdef
+      PUID: 1000
+      PGID: 1000
+      TZ: America/Sao_Paulo
+      ORIGIN: http://localhost:8080
+      RIVEN_FORCE_ENV: "true"
+      RIVEN_DATABASE_HOST: postgresql+psycopg2://postgres:postgres@riven_postgres:5432/riven
+      RIVEN_FILESYSTEM_MOUNT_PATH: /mount
+      RIVEN_LIBRARY_PATH: /mount
+      RIVEN_JELLYFIN_URL: http://jellyfin:8096
+      RIVEN_CONTENT_OVERSEERR_URL: http://seerr:5055
+      RIVEN_SCRAPING_COMET_URL: http://comet:8000
+      RIVEN_SCRAPING_PROWLARR_URL: http://prowlarr:9696
+      RIVEN_SCRAPING_ZILEAN_ENABLED: "true"
+      RIVEN_SCRAPING_ZILEAN_URL: http://zilean:8181
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ../../container_data/riven:/riven/data
+      - ../../container_data/mount:/mount:rshared
+    depends_on:
+      riven_postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/openapi.json >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    networks:
+      - media
+
+  riven_frontend:
+    image: spoked/riven-frontend:v0.21.2
+    container_name: riven-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      BACKEND_URL: http://riven:8080
+      BACKEND_API_KEY: 0123456789abcdef0123456789abcdef
+      DATABASE_URL: /riven/data/riven.db
+      AUTH_SECRET: local-dev-riven-frontend-auth-secret
+      ORIGIN: http://localhost:3000
+    volumes:
+      - ../../container_data/riven_frontend:/riven/data
+    depends_on:
+      riven:
+        condition: service_healthy
+    networks:
+      - media
+
+  riven_postgres:
+    image: postgres:17-alpine
+    container_name: riven_postgres
+    restart: unless-stopped
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: riven
+      RIVEN_POSTGRES_DB: riven
+      ZILEAN_POSTGRES_DB: zilean
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../../container_data/db:/var/lib/postgresql/data
+      - ../shared/postgres-init/01-create-extra-databases.sh:/docker-entrypoint-initdb.d/01-create-extra-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d riven"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - media
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    user: "1000:1000"
+    restart: unless-stopped
+    ports:
+      - "8096:8096"
+    environment:
+      TZ: America/Sao_Paulo
+    volumes:
+      - ../../container_data/jellyfin/config:/config
+      - ../../container_data/jellyfin/cache:/cache
+      - ../../container_data/mount:/mount:rslave
+    depends_on:
+      riven:
+        condition: service_started
+    networks:
+      - media
+
+  comet:
+    image: g0ldyy/comet:latest
+    container_name: comet
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_TYPE: sqlite
+      DATABASE_PATH: /app/data/comet.db
+      ADMIN_DASHBOARD_PASSWORD: comet-dev
+      SCRAPE_PROWLARR: both
+      PROWLARR_URL: http://prowlarr:9696
+      PROWLARR_API_KEY: c666683268cf4af9b62bcbe0abe66aad
+      SCRAPE_NYAA: both
+      SCRAPE_ANIMETOSHO: both
+      SCRAPE_SEADEX: both
+      SCRAPE_NEKOBT: both
+      SCRAPE_ZILEAN: both
+      ZILEAN_URL: http://zilean:8181
+    volumes:
+      - ../../container_data/comet:/app/data
+    depends_on:
+      prowlarr:
+        condition: service_started
+      zilean:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - media
+
+  seerr:
+    image: sctx/overseerr:latest
+    container_name: seerr
+    restart: unless-stopped
+    ports:
+      - "5055:5055"
+    environment:
+      TZ: America/Sao_Paulo
+      LOG_LEVEL: info
+      PORT: 5055
+    volumes:
+      - ../../container_data/seerr:/app/config
+    networks:
+      - media
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    ports:
+      - "9696:9696"
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: America/Sao_Paulo
+    volumes:
+      - ../../container_data/prowlarr:/config
+    networks:
+      - media
+
+  zilean:
+    image: ipromknight/zilean:latest
+    container_name: zilean
+    restart: unless-stopped
+    tty: true
+    ports:
+      - "8181:8181"
+    environment:
+      Zilean__Database__ConnectionString: Host=riven_postgres;Port=5432;Database=zilean;Username=postgres;Password=postgres;Timeout=300;CommandTimeout=3600;
+    volumes:
+      - ../../container_data/zilean:/app/data
+    depends_on:
+      riven_postgres:
+        condition: service_healthy
+    networks:
+      - media
+
+networks:
+  media:
+    name: riven-dev-media

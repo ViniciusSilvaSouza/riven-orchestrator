@@ -16,6 +16,90 @@ router = APIRouter(
 )
 
 
+def _resolve_path(current_settings: dict[str, Any], path: str) -> Any:
+    current_obj: Any = current_settings
+    for key in path.split("."):
+        if not isinstance(current_obj, dict) or key not in current_obj:
+            return None
+        current_obj = current_obj[key]
+    return current_obj
+
+
+def _compat_value(current_settings: dict[str, Any], path: str) -> Any:
+    filesystem = cast(dict[str, Any], current_settings.get("filesystem", {}))
+    downloaders = cast(dict[str, Any], current_settings.get("downloaders", {}))
+    post_processing = cast(dict[str, Any], current_settings.get("post_processing", {}))
+    subtitle = cast(dict[str, Any], post_processing.get("subtitle", {}))
+    subtitle_providers = cast(dict[str, Any], subtitle.get("providers", {}))
+    scraping = cast(dict[str, Any], current_settings.get("scraping", {}))
+    indexer = cast(dict[str, Any], current_settings.get("indexer", {}))
+    logging = cast(dict[str, Any], current_settings.get("logging", {}))
+    updaters = cast(dict[str, Any], current_settings.get("updaters", {}))
+
+    anime_profile = cast(
+        dict[str, Any],
+        cast(dict[str, Any], filesystem.get("library_profiles", {})).get("anime", {}),
+    )
+
+    compat: dict[str, Any] = {
+        "debug": current_settings.get("log_level") == "DEBUG",
+        "debug_database": False,
+        "log": logging.get("enabled", True),
+        "force_refresh": False,
+        "map_metadata": False,
+        "symlink": {
+            "rclone_path": filesystem.get("mount_path", ""),
+            "library_path": anime_profile.get("library_path", "/library"),
+            "separate_anime_dirs": anime_profile.get("enabled", False),
+            "repair_symlinks": False,
+            "repair_interval": 6,
+        },
+        "downloaders": {
+            **downloaders,
+            "prefer_speed_over_quality": False,
+            "torbox": {"enabled": False, "api_key": ""},
+        },
+        "indexer": {
+            **indexer,
+            "update_interval": indexer.get("schedule_offset_minutes", 30) * 60,
+        },
+        "post_processing": {
+            **post_processing,
+            "subliminal": {
+                "enabled": subtitle.get("enabled", False),
+                "languages": subtitle.get("languages", []),
+                "providers": {
+                    "opensubtitles": subtitle_providers.get(
+                        "opensubtitles", {"enabled": False}
+                    ),
+                    "opensubtitlescom": {
+                        "enabled": False,
+                        "username": "",
+                        "password": "",
+                    },
+                },
+            },
+        },
+        "scraping": {
+            **scraping,
+            "parse_debug": False,
+            "knightcrawler": {
+                "enabled": False,
+                "url": "",
+                "filter": "",
+                "timeout": 30,
+                "ratelimit": True,
+            },
+        },
+        "updaters": {
+            **updaters,
+            "updater_interval": updaters.get("updater_interval", 120),
+        },
+    }
+
+    return compat.get(path)
+
+
 @router.get(
     "/schema",
     operation_id="get_settings_schema",
@@ -143,16 +227,12 @@ async def get_settings(
     data = dict[str, Any]()
 
     for path in paths.split(","):
-        keys = path.split(".")
-        current_obj = current_settings
+        compat_value = _compat_value(current_settings, path)
+        if compat_value is not None:
+            data[path] = compat_value
+            continue
 
-        for k in keys:
-            if k not in current_obj:
-                continue
-
-            current_obj = current_obj[k]
-
-        data[path] = current_obj
+        data[path] = _resolve_path(current_settings, path)
 
     return data
 

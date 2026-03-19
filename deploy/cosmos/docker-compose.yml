@@ -48,7 +48,7 @@ services:
       riven-postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080 >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/openapi.json >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -64,8 +64,11 @@ services:
       POSTGRES_USER: ${RIVEN_POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${RIVEN_POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${RIVEN_POSTGRES_DB:-riven}
+      RIVEN_POSTGRES_DB: ${RIVEN_POSTGRES_DB:-riven}
+      ZILEAN_POSTGRES_DB: ${ZILEAN_POSTGRES_DB:-zilean}
     volumes:
-      - ${RIVEN_DB_DIR:-./data/postgres}:/var/lib/postgresql/data/pgdata
+      - ${RIVEN_DB_DIR:-./data/postgres}:/var/lib/postgresql/data
+      - ../shared/postgres-init/01-create-extra-databases.sh:/docker-entrypoint-initdb.d/01-create-extra-databases.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${RIVEN_POSTGRES_USER:-postgres} -d ${RIVEN_POSTGRES_DB:-riven}"]
       interval: 10s
@@ -131,31 +134,12 @@ services:
     ports:
       - "${ZILEAN_PORT:-8181}:8181"
     environment:
-      Zilean__Database__ConnectionString: Host=zilean-postgres;Port=5432;Database=${ZILEAN_POSTGRES_DB:-zilean};Username=${ZILEAN_POSTGRES_USER:-postgres};Password=${ZILEAN_POSTGRES_PASSWORD:-postgres};Timeout=300;CommandTimeout=3600;
+      Zilean__Database__ConnectionString: Host=riven-postgres;Port=5432;Database=${ZILEAN_POSTGRES_DB:-zilean};Username=${RIVEN_POSTGRES_USER:-postgres};Password=${RIVEN_POSTGRES_PASSWORD:-postgres};Timeout=300;CommandTimeout=3600;
     volumes:
       - ${ZILEAN_DATA_DIR:-./data/zilean}:/app/data
     depends_on:
-      zilean-postgres:
+      riven-postgres:
         condition: service_healthy
-    networks:
-      - media
-
-  zilean-postgres:
-    image: postgres:17-alpine
-    container_name: zilean-postgres
-    restart: unless-stopped
-    environment:
-      PGDATA: /var/lib/postgresql/data/pgdata
-      POSTGRES_USER: ${ZILEAN_POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${ZILEAN_POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${ZILEAN_POSTGRES_DB:-zilean}
-    volumes:
-      - ${ZILEAN_DB_DIR:-./data/zilean-postgres}:/var/lib/postgresql/data/pgdata
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${ZILEAN_POSTGRES_USER:-postgres} -d ${ZILEAN_POSTGRES_DB:-zilean}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - media
 

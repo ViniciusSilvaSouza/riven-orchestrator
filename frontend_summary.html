@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" href="./favicon.ico" />
+		<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+		<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+		<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="preload" href="/fonts/Satoshi-Bold.woff2" as="font" type="font/woff2" crossorigin />
+		<link
+			rel="preload"
+			href="/fonts/Satoshi-Regular.woff2"
+			as="font"
+			type="font/woff2"
+			crossorigin
+		/>
+		<link
+			rel="preload"
+			href="/fonts/Satoshi-Medium.woff2"
+			as="font"
+			type="font/woff2"
+			crossorigin
+		/>
+
+		<style>
+			@font-face {
+				font-family: 'Satoshi';
+				src:
+					url('/fonts/Satoshi-Light.woff2') format('woff2'),
+					url('/fonts/Satoshi-Light.woff') format('woff');
+				font-weight: 300;
+				font-style: normal;
+				font-display: swap;
+			}
+
+			@font-face {
+				font-family: 'Satoshi';
+				src:
+					url('/fonts/Satoshi-Bold.woff2') format('woff2'),
+					url('/fonts/Satoshi-Bold.woff') format('woff');
+				font-weight: bold;
+				font-style: normal;
+				font-display: swap;
+			}
+
+			@font-face {
+				font-family: 'Satoshi';
+				src:
+					url('/fonts/Satoshi-Medium.woff2') format('woff2'),
+					url('/fonts/Satoshi-Medium.woff') format('woff');
+				font-weight: 500;
+				font-style: normal;
+				font-display: swap;
+			}
+
+			@font-face {
+				font-family: 'Satoshi';
+				src:
+					url('/fonts/Satoshi-Regular.woff2') format('woff2'),
+					url('/fonts/Satoshi-Regular.woff') format('woff');
+				font-weight: normal;
+				font-style: normal;
+				font-display: swap;
+			}
+
+			@font-face {
+				font-family: 'Satoshi';
+				src:
+					url('/fonts/Satoshi-Black.woff2') format('woff2'),
+					url('/fonts/Satoshi-Black.woff') format('woff');
+				font-weight: bold;
+				font-style: normal;
+				font-display: swap;
+			}
+		</style>
+		
+		<link href="./_app/immutable/assets/Toaster.DQwrSZtH.css" rel="stylesheet">
+		<link href="./_app/immutable/assets/0.BlbYGss2.css" rel="stylesheet">
+		<link href="./_app/immutable/assets/header.DDDJxPdQ.css" rel="stylesheet"><title>Summary | Riven</title><!-- HEAD_svelte-cpyj77_START --><!-- HTML_TAG_START --><script nonce="%sveltekit.nonce%">(function setInitialMode(defaultMode, themeColors2) {
+  const rootEl = document.documentElement;
+  const mode = localStorage.getItem("mode-watcher-mode") || defaultMode;
+  const light = mode === "light" || mode === "system" && window.matchMedia("(prefers-color-scheme: light)").matches;
+  rootEl.classList[light ? "remove" : "add"]("dark");
+  rootEl.style.colorScheme = light ? "light" : "dark";
+  if (themeColors2) {
+    const themeMetaEl = document.querySelector('meta[name="theme-color"]');
+    if (themeMetaEl) {
+      themeMetaEl.setAttribute("content", mode === "light" ? themeColors2.light : themeColors2.dark);
+    }
+  }
+  localStorage.setItem("mode-watcher-mode", mode);
+})("system");</script><!-- HTML_TAG_END --><!-- HEAD_svelte-cpyj77_END --><!-- HEAD_svelte-15eb7oi_START --><!-- HEAD_svelte-15eb7oi_END -->
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">    <div class="bg-background font-primary font-medium"> <header id="header" class="fixed top-0 z-[99] flex w-full items-center justify-between bg-transparent p-8 transition-all duration-300 ease-in-out md:px-24 lg:px-32"><div class="flex items-center gap-2"><a href="/" class="flex items-center gap-2"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon lucide lucide-mountain size-6 md:size-8"><path d="m8 3 4 8 5-5 5 15H2L8 3z"></path></svg> <h1 class="text-xl font-medium md:text-2xl" data-svelte-h="svelte-hc0vqf">Riven</h1></a></div> <nav class="hidden items-center gap-6 tracking-wider md:flex"><div class="flex items-center gap-3"><a href="/"><div class="relative font-medium after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-full after:origin-bottom-right after:scale-x-0 after:bg-gray-800 after:transition-transform after:duration-300 after:ease-in-out hover:text-gray-700 hover:after:origin-bottom-left hover:after:scale-x-100 dark:after:bg-gray-200 dark:hover:text-gray-200">Home</div></a><a href="/browse"><div class="relative font-medium after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-full after:origin-bottom-right after:scale-x-0 after:bg-gray-800 after:transition-transform after:duration-300 after:ease-in-out hover:text-gray-700 hover:after:origin-bottom-left hover:after:scale-x-100 dark:after:bg-gray-200 dark:hover:text-gray-200">Browse</div></a><a href="/summary"><div class="relative font-medium after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-full after:origin-bottom-left after:scale-x-100 after:bg-gray-800 after:transition-transform after:duration-300 after:ease-in-out hover:text-gray-700 hover:after:origin-bottom-right hover:after:scale-x-0 dark:after:bg-gray-200 dark:hover:text-gray-200">Summary</div></a><a href="/settings"><div class="relative font-medium after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-full after:origin-bottom-right after:scale-x-0 after:bg-gray-800 after:transition-transform after:duration-300 after:ease-in-out hover:text-gray-700 hover:after:origin-bottom-left hover:after:scale-x-100 dark:after:bg-gray-200 dark:hover:text-gray-200">Settings</div></a><a href="/logs"><div class="relative font-medium after:absolute after:bottom-0 after:left-0 after:h-[2px] after:w-full after:origin-bottom-right after:scale-x-0 after:bg-gray-800 after:transition-transform after:duration-300 after:ease-in-out hover:text-gray-700 hover:after:origin-bottom-left hover:after:scale-x-100 dark:after:bg-gray-200 dark:hover:text-gray-200">Logs</div></a></div>  <button type="button" tabindex="0" class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 hover:bg-accent hover:text-accent-foreground h-10 w-10" data-button-root=""><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon lucide lucide-search h-5 w-5"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg> <span class="sr-only" data-svelte-h="svelte-et45b7">Search</span></button>  <button type="button" tabindex="0" aria-describedby="S8WNNIcLOJ" id="i7uPjxIVzN" data-state="closed" data-melt-tooltip-trigger="" data-tooltip-trigger="" class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-9 rounded-md px-3 max-w-max" data-button-root=""><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon lucide lucide-sun h-4 w-4"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg></button> </nav> <nav class="flex items-center gap-2 tracking-wider md:hidden"> <button type="button" tabindex="0" class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 hover:bg-accent hover:text-accent-foreground h-10 w-10" data-button-root=""><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon lucide lucide-search h-5 w-5"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg> <span class="sr-only" data-svelte-h="svelte-et45b7">Search</span></button>  <button type="button" tabindex="0" aria-describedby="2OB8OAHPir" id="_RWJ1cL7GD" data-state="closed" data-melt-tooltip-trigger="" data-tooltip-trigger="" class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-9 rounded-md px-3 max-w-max" data-button-root=""><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon lucide lucide-sun h-4 w-4"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg></button>  <button aria-haspopup="dialog" aria-expanded="false" type="button" data-melt-dialog-trigger="" data-dialog-trigger=""> <button type="button" tabindex="0" class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-9 rounded-md px-3 max-w-max" data-button-root=""><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon lucide lucide-ellipsis h-4 w-4"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button></button> <div data-portal="" data-melt-dialog-portalled="" data-dialog-portal=""> </div></nav></header> <div data-portal="" data-melt-dialog-portalled="" data-dialog-portal=""> </div> <div class="mt-32 flex w-full flex-col p-8 md:px-24 lg:px-32"><h2 class="text-xl md:text-2xl" data-svelte-h="svelte-1w7jdxp">Statistics</h2> <p class="text-sm text-muted-foreground lg:text-base" data-svelte-h="svelte-1mhhbhg">Statistics of the library</p> <div class="mt-4 grid w-full grid-cols-2 gap-6 md:grid-cols-3 lg:grid-cols-4"><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Total Items</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Total Movies</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?type=movie" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Total Shows</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <p class="text-sm text-muted-foreground lg:text-base">0 Seasons</p> <p class="text-sm text-muted-foreground lg:text-base">0 Episodes
+						</p> <a href="/browse?type=show" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Incomplete Items</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Unknown%2CRequested%2CIndexed%2CScraped%2CDownloaded%2CSymlinked%2CFailed%2CPartiallyCompleted" class="text-sm text-muted-foreground">See items</a> </div> </div></div> <h2 class="mt-12 text-xl md:text-2xl" data-svelte-h="svelte-l1h0a5">Services</h2> <p class="text-sm text-muted-foreground lg:text-base" data-svelte-h="svelte-fn9ade">Tells the current status of the services</p> <div class="mt-4 grid w-full grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4"><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Core services</h3> </div> <div class="p-6 pt-0"><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Symlink Library</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Symlink</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Scraping</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Updater</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Post Processing</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Subliminal</p> </div> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Downloader services</h3> </div> <div class="p-6 pt-0"><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-green-500"></span> <p class="text-sm lg:text-base">Real Debrid</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">All Debrid</p> </div> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Content services</h3> </div> <div class="p-6 pt-0"><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">MDB List</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Overseerr</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Plex Watchlist</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Listrr</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Trakt</p> </div> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Scraping services</h3> </div> <div class="p-6 pt-0"><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Torrentio</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Knightcrawler</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Jackett</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Orionoid</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Media Fusion</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-red-500"></span> <p class="text-sm lg:text-base">Prowlarr</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-green-500"></span> <p class="text-sm lg:text-base">Zilean</p> </div><div class="flex items-center gap-2"><span class="h-3 w-3 rounded-full bg-green-500"></span> <p class="text-sm lg:text-base">Comet</p> </div> </div> </div></div> <h2 class="mt-12 text-xl md:text-2xl" data-svelte-h="svelte-19t57l3">States</h2> <p class="text-sm text-muted-foreground lg:text-base" data-svelte-h="svelte-19v72n3">Tells the current state of the items in the library</p> <button aria-haspopup="dialog" aria-expanded="false" type="button" data-melt-dialog-trigger="" data-dialog-trigger="" class="flex w-full max-w-max items-start text-muted-foreground underline">Know more about states</button> <div data-portal="" data-melt-dialog-portalled="" data-dialog-portal=""> </div> <div class="mb-16 mt-4 grid w-full grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5"><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Unknown</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Unknown" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Unreleased</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Unreleased" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Ongoing</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Ongoing" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Requested</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Requested" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Indexed</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Indexed" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Scraped</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Scraped" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Downloaded</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Downloaded" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Symlinked</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Symlinked" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm col-span-2"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Completed</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Completed" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Partially Completed</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=PartiallyCompleted" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Failed</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Failed" class="text-sm text-muted-foreground">See items</a> </div> </div><div class="rounded-lg border bg-card text-card-foreground shadow-sm"><div class="flex flex-col space-y-1.5 p-6"><h3 class="tracking-tight text-sm font-medium lg:text-base">Paused</h3> </div> <div class="p-6 pt-0"><p class="text-lg lg:text-3xl">0</p> <a href="/browse?state=Paused" class="text-sm text-muted-foreground">See items</a> </div> </div></div></div></div> 
+			
+			<script>
+				{
+					__sveltekit_1205648 = {
+						base: new URL(".", location).pathname.slice(0, -1),
+						env: {}
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("./_app/immutable/entry/start.Ds8ih6O8.js"),
+						import("./_app/immutable/entry/app.FCF35kHJ.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element, {
+							node_ids: [0, 27],
+							data: [null,null],
+							form: null,
+							error: null
+						});
+					});
+				}
+			</script>
+		</div>
+	</body>
+</html>
+

@@ -20,9 +20,9 @@ That means the main FUSE risks move from "process manager mismatch" to normal ho
 
 ## Recommended architecture
 
-- `riven` + `riven-postgres` in the same stack
+- `riven` + one shared `riven-postgres` instance in the same stack
 - `jellyfin`, `seerr`, and `prowlarr` on the same Docker network
-- `zilean` optional but colocated here for convenience because Riven can talk to it over the internal service name
+- `zilean` optional but colocated here for convenience, using its own database inside that same Postgres instance
 
 Internal URLs used by Riven in this stack:
 

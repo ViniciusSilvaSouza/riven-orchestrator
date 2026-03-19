@@ -62,9 +62,27 @@ class SettingsManager:
                 checked_settings[key] = sub_checked_settings
             else:
                 environment_variable = f"{prefix}_{key}".upper()
+                fallback_environment_variables = []
 
-                if os.getenv(environment_variable, None):
-                    new_value = os.getenv(environment_variable)
+                # Backward compatibility for the top-level API key:
+                # historically the project has used API_KEY in .env,
+                # while the recursive override loader expects RIVEN_API_KEY.
+                if prefix == "RIVEN" and key == "api_key":
+                    fallback_environment_variables.append("API_KEY")
+
+                selected_environment_variable = environment_variable
+                selected_environment_value = os.getenv(environment_variable, None)
+
+                if selected_environment_value is None:
+                    for fallback_environment_variable in fallback_environment_variables:
+                        fallback_value = os.getenv(fallback_environment_variable, None)
+                        if fallback_value is not None:
+                            selected_environment_variable = fallback_environment_variable
+                            selected_environment_value = fallback_value
+                            break
+
+                if selected_environment_value is not None:
+                    new_value = selected_environment_value
 
                     if new_value is None:
                         checked_settings[key] = value
@@ -80,7 +98,7 @@ class SettingsManager:
                         checked_settings[key] = json.loads(new_value)
                     elif isinstance(value, list):
                         logger.error(
-                            f"Environment variable {environment_variable} for list type must be a JSON array string. Got {new_value}."
+                            f"Environment variable {selected_environment_variable} for list type must be a JSON array string. Got {new_value}."
                         )
                     else:
                         checked_settings[key] = new_value
