@@ -11,7 +11,7 @@ from program.utils.request import SmartSession, get_hostname_from_url
 if TYPE_CHECKING:
     from program.media.item import MediaItem
 
-type ItemType = Literal["tv", "movie"]
+ItemType = Literal["tv", "movie"]
 
 
 class OverseerrAPIError(Exception):

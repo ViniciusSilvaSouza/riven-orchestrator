@@ -46,7 +46,7 @@ from .stream_connection import StreamConnection
 PROXY_REQUIRED_PROVIDERS = {"alldebrid"}
 
 
-type ReadType = Literal[
+ReadType = Literal[
     "header_scan",
     "footer_scan",
     "general_scan",

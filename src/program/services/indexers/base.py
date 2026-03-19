@@ -1,12 +1,14 @@
 """Base indexer module"""
 
-from typing import cast
+from typing import TypeVar, cast
 from loguru import logger
 
 from program.media.item import MediaItem, Movie, Show
 from program.settings import settings_manager
 from program.core.runner import Runner
 from program.settings.models import IndexerModel
+
+TMediaItem = TypeVar("TMediaItem", bound=MediaItem)
 
 
 class BaseIndexer(Runner[IndexerModel]):
@@ -41,7 +43,7 @@ class BaseIndexer(Runner[IndexerModel]):
         for attr in attributes:
             target.set(attr, getattr(source, attr, None))
 
-    def copy_items[T: MediaItem](self, item_a: MediaItem, item_b: T) -> T:
+    def copy_items(self, item_a: MediaItem, item_b: TMediaItem) -> TMediaItem:
         """Copy attributes from item A to item B recursively."""
 
         is_anime = bool(item_a.is_anime or item_b.is_anime)
