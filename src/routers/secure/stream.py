@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from program.db.db import db_session
 from program.managers.sse_manager import sse_manager
 from program.media.item import MediaItem
+from program.orchestrator import debrid_manager
+from program.program import Program
 from program.services.streaming.media_stream import PROXY_REQUIRED_PROVIDERS
 from program.settings import settings_manager
 from program.utils.async_client import AsyncClient
@@ -89,15 +91,43 @@ def _get_media_info(item_id: int) -> tuple[str, str, str]:
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
 
-        if not item.media_entry:
-            raise HTTPException(status_code=404, detail="Item has no media file")
+        if item.media_entry and item.media_entry.url:
+            return (
+                item.media_entry.url,
+                item.media_entry.provider or "",
+                item.media_entry.original_filename,
+            )
 
-        url = item.media_entry.url
+    # Try high-priority on-play resolution if no media is currently attached.
+    result = debrid_manager.resolve_on_play(
+        di[Program],
+        item_id,
+        timeout_seconds=20,
+        max_streams=3,
+    )
+    if not result.success:
+        raise HTTPException(
+            status_code=result.status_code,
+            detail=f"Item has no valid stream URL ({result.message})",
+        )
 
-        if not url:
-            raise HTTPException(status_code=404, detail="Item has no valid stream URL")
+    with db_session() as session:
+        refreshed_item = session.get(MediaItem, item_id)
+        if (
+            refreshed_item
+            and refreshed_item.media_entry
+            and refreshed_item.media_entry.url
+        ):
+            return (
+                refreshed_item.media_entry.url,
+                refreshed_item.media_entry.provider or "",
+                refreshed_item.media_entry.original_filename,
+            )
 
-        return url, item.media_entry.provider or "", item.media_entry.original_filename
+    raise HTTPException(
+        status_code=409,
+        detail="Item resolution succeeded but no stream URL was attached",
+    )
 
 
 def _get_client(provider: str) -> httpx.AsyncClient:
