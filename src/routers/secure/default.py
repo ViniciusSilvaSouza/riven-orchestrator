@@ -15,6 +15,7 @@ from program.db import db_functions
 from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.state import States
+from program.orchestrator import debrid_manager
 from program.program import Program
 from program.settings import settings_manager
 from program.utils import generate_api_key
@@ -58,6 +59,37 @@ class DownloaderUserInfoResponse(BaseModel):
     """Response containing user info for all initialized downloader services"""
 
     services: list[DownloaderUserInfo]
+
+
+class OrchestratorRateLimitStatus(BaseModel):
+    requests_per_minute: int | None = None
+    effective_limit: int | None = None
+    current_requests: int | None = None
+    remaining_budget: int | None = None
+    usage_ratio: float | None = None
+
+
+class OrchestratorProviderStatus(BaseModel):
+    key: str
+    health: str
+    cooldown_until: str | None = None
+    total_attempts: int
+    total_successes: int
+    total_failures: int
+    consecutive_failures: int
+    last_selected_at: str | None = None
+    last_success_at: str | None = None
+    last_failure_at: str | None = None
+    rate_limit: OrchestratorRateLimitStatus
+
+
+class OrchestratorStatusResponse(BaseModel):
+    enabled: bool
+    strategy: str
+    priority_order: list[str]
+    negative_ttl_minutes: int
+    shared_queue_enabled: bool
+    providers: list[OrchestratorProviderStatus]
 
 
 @router.get(
@@ -136,6 +168,21 @@ async def download_user_info() -> DownloaderUserInfoResponse:
     except Exception as e:
         logger.error(f"Error getting downloader user info: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.get(
+    "/orchestrator_status",
+    operation_id="orchestrator_status",
+    response_model=OrchestratorStatusResponse,
+)
+async def orchestrator_status() -> OrchestratorStatusResponse:
+    services = di[Program].services
+
+    if services and services.downloader:
+        debrid_manager.sync_services(services.downloader.initialized_services)
+
+    snapshot = debrid_manager.get_status_snapshot()
+    return OrchestratorStatusResponse.model_validate(snapshot)
 
 
 @router.post(

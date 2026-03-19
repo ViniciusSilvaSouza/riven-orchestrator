@@ -66,6 +66,7 @@ class Downloader(Runner[None, DownloaderBase]):
         self.subtitles_enabled = (
             settings_manager.settings.post_processing.subtitle.enabled
         )
+        debrid_manager.sync_services(self.initialized_services)
 
     def validate(self):
         if not self.initialized_services:
@@ -133,6 +134,15 @@ class Downloader(Runner[None, DownloaderBase]):
                 stream_hit_circuit_breaker = False
 
                 for service in stream_services:
+                    if (
+                        settings_manager.settings.downloaders.orchestrator.enabled
+                        and not debrid_manager.record_provider_attempt(service.key)
+                    ):
+                        logger.debug(
+                            f"Skipping {service.key} for {stream.infohash}: no remaining provider budget at attempt time"
+                        )
+                        continue
+
                     logger.debug(
                         f"Trying stream {stream.infohash} on {service.key} for {item.log_string}"
                     )

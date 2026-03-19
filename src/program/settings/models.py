@@ -102,6 +102,12 @@ class DebridOrchestratorModel(Observable):
         ge=1,
         description="How long to remember negative debrid cache lookups",
     )
+    provider_priority: list[
+        Literal["realdebrid", "debridlink", "alldebrid"]
+    ] = Field(
+        default_factory=lambda: ["realdebrid", "debridlink", "alldebrid"],
+        description="Provider order used when strategy is set to priority",
+    )
     shared_queue: bool = Field(
         default=False,
         description="Feature flag placeholder for shared orchestration queue scheduling",
@@ -110,6 +116,16 @@ class DebridOrchestratorModel(Observable):
         default_factory=lambda: DebridOrchestratorRateLimitModel(),
         description="Per-provider orchestration rate-limit settings",
     )
+
+    @field_validator("provider_priority")
+    def validate_provider_priority(
+        cls, value: list[Literal["realdebrid", "debridlink", "alldebrid"]]
+    ):
+        if not value:
+            raise ValueError("provider_priority cannot be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("provider_priority cannot contain duplicates")
+        return value
 
 
 class DownloadersModel(Observable):

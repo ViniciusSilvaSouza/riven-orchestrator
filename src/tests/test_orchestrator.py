@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+import importlib
 from unittest.mock import Mock
 
 from program.orchestrator.debrid_manager import DebridManager
@@ -54,12 +55,13 @@ def test_debrid_manager_prioritizes_cached_provider(monkeypatch):
 def test_debrid_manager_saves_new_resolution(monkeypatch):
     manager = DebridManager()
     session = FakeSession()
+    debrid_manager_module = importlib.import_module("program.orchestrator.debrid_manager")
 
     @contextmanager
     def session_factory():
         yield session
 
-    monkeypatch.setattr("program.orchestrator.debrid_manager.db_session", session_factory)
+    monkeypatch.setattr(debrid_manager_module, "db_session", session_factory)
 
     manager.save_resolution("abc123", "realdebrid", DebridCacheStatus.CACHED)
 
@@ -76,11 +78,75 @@ def test_debrid_manager_negative_cache_expires(monkeypatch):
         status=DebridCacheStatus.NOT_FOUND,
         last_checked=datetime.utcnow() - timedelta(hours=1),
     )
+    debrid_manager_module = importlib.import_module("program.orchestrator.debrid_manager")
 
     @contextmanager
     def session_factory():
         yield FakeSession(stored=cached_entry)
 
-    monkeypatch.setattr("program.orchestrator.debrid_manager.db_session", session_factory)
+    monkeypatch.setattr(debrid_manager_module, "db_session", session_factory)
 
     assert manager.get_cached("abc123", "realdebrid") is None
+
+
+def test_debrid_manager_balanced_prefers_less_used_provider(monkeypatch):
+    manager = DebridManager()
+    service_a = Mock(key="realdebrid")
+    service_b = Mock(key="alldebrid")
+
+    monkeypatch.setattr(manager, "get_cached", lambda infohash, provider: None)
+    manager.sync_services([service_a, service_b])
+
+    assert manager.record_provider_attempt("realdebrid") is True
+    assert manager.record_provider_attempt("realdebrid") is True
+
+    selected = manager.select_providers([service_a, service_b], "abc123")
+
+    assert [service.key for service in selected] == ["alldebrid", "realdebrid"]
+
+
+def test_debrid_manager_priority_honors_configured_order(monkeypatch):
+    from program.settings import settings_manager
+
+    old_strategy = settings_manager.settings.downloaders.orchestrator.provider_strategy
+    old_order = list(settings_manager.settings.downloaders.orchestrator.provider_priority)
+
+    settings_manager.settings.downloaders.orchestrator.provider_strategy = "priority"
+    settings_manager.settings.downloaders.orchestrator.provider_priority = [
+        "alldebrid",
+        "realdebrid",
+        "debridlink",
+    ]
+
+    try:
+        manager = DebridManager()
+        service_a = Mock(key="realdebrid")
+        service_b = Mock(key="alldebrid")
+
+        monkeypatch.setattr(manager, "get_cached", lambda infohash, provider: None)
+
+        selected = manager.select_providers([service_a, service_b], "abc123")
+
+        assert [service.key for service in selected] == ["alldebrid", "realdebrid"]
+    finally:
+        settings_manager.settings.downloaders.orchestrator.provider_strategy = old_strategy
+        settings_manager.settings.downloaders.orchestrator.provider_priority = old_order
+
+
+def test_select_providers_does_not_consume_budget_until_attempt(monkeypatch):
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+
+    monkeypatch.setattr(manager, "get_cached", lambda infohash, provider: None)
+    manager.sync_services([service])
+    manager._rate_limiters["realdebrid"] = ProviderRateLimiter(
+        requests_per_minute=1,
+        threshold_ratio=1.0,
+    )
+
+    selected = manager.select_providers([service], "abc123")
+
+    assert [provider.key for provider in selected] == ["realdebrid"]
+    assert manager._rate_limiters["realdebrid"].current_requests() == 0
+    assert manager.record_provider_attempt("realdebrid") is True
+    assert manager._rate_limiters["realdebrid"].current_requests() == 1
