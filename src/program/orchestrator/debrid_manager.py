@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import time
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -24,6 +25,20 @@ from program.settings import settings_manager
 if TYPE_CHECKING:
     from program.program import Program
     from program.services.downloaders.shared import DownloaderBase
+
+
+@dataclass
+class ResolveOnPlayResult:
+    success: bool
+    status_code: int
+    message: str
+    item_id: int
+    resolved: bool
+    provider: str | None
+    infohash: str | None
+    queued_tasks: int
+    processed_tasks: int
+    elapsed_ms: int
 
 
 class DebridManager:
@@ -241,6 +256,233 @@ class DebridManager:
             )
 
         return sorted(streams, key=_stream_key, reverse=True)
+
+    def _get_item_play_snapshot(self, item_id: int) -> dict[str, object]:
+        from program.db import db_functions
+
+        with db_session() as session:
+            item = db_functions.get_item_by_id(item_id, session=session)
+            if item is None:
+                return {
+                    "exists": False,
+                    "resolved": False,
+                    "provider": None,
+                    "infohash": None,
+                    "last_state": None,
+                    "open_tasks": 0,
+                    "last_error": None,
+                }
+
+            item = session.merge(item)
+            media_entry = item.media_entry
+            active_stream = getattr(item, "active_stream", None)
+            resolved = bool(media_entry and media_entry.url)
+
+            open_tasks = (
+                session.execute(
+                    select(DebridResolutionTask.id)
+                    .where(DebridResolutionTask.item_id == item_id)
+                    .where(
+                        DebridResolutionTask.status.in_(
+                            [DebridTaskStatus.PENDING, DebridTaskStatus.PROCESSING]
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            latest_task = (
+                session.execute(
+                    select(DebridResolutionTask)
+                    .where(DebridResolutionTask.item_id == item_id)
+                    .order_by(
+                        DebridResolutionTask.updated_at.desc(),
+                        DebridResolutionTask.id.desc(),
+                    )
+                )
+                .scalars()
+                .first()
+            )
+
+            provider = media_entry.provider if resolved and media_entry else None
+            if provider is None and latest_task is not None:
+                provider = latest_task.provider
+
+            infohash = (
+                active_stream.infohash
+                if active_stream is not None
+                else (latest_task.infohash if latest_task is not None else None)
+            )
+
+            return {
+                "exists": True,
+                "resolved": resolved,
+                "provider": provider,
+                "infohash": infohash,
+                "last_state": str(item.last_state),
+                "open_tasks": len(open_tasks),
+                "last_error": latest_task.last_error if latest_task is not None else None,
+            }
+
+    def resolve_on_play(
+        self,
+        program: "Program",
+        item_id: int,
+        *,
+        timeout_seconds: int = 20,
+        max_streams: int = 3,
+    ) -> ResolveOnPlayResult:
+        from program.db import db_functions
+        from program.media.state import States
+
+        started_at = datetime.utcnow()
+
+        def _elapsed_ms() -> int:
+            return int((datetime.utcnow() - started_at).total_seconds() * 1000)
+
+        if not program.services or not program.services.downloader.initialized:
+            return ResolveOnPlayResult(
+                success=False,
+                status_code=503,
+                message="Downloader service is not initialized",
+                item_id=item_id,
+                resolved=False,
+                provider=None,
+                infohash=None,
+                queued_tasks=0,
+                processed_tasks=0,
+                elapsed_ms=_elapsed_ms(),
+            )
+
+        snapshot = self._get_item_play_snapshot(item_id)
+        if not bool(snapshot["exists"]):
+            return ResolveOnPlayResult(
+                success=False,
+                status_code=404,
+                message="Item not found",
+                item_id=item_id,
+                resolved=False,
+                provider=None,
+                infohash=None,
+                queued_tasks=0,
+                processed_tasks=0,
+                elapsed_ms=_elapsed_ms(),
+            )
+
+        if bool(snapshot["resolved"]):
+            return ResolveOnPlayResult(
+                success=True,
+                status_code=200,
+                message="Item already resolved",
+                item_id=item_id,
+                resolved=True,
+                provider=snapshot["provider"],
+                infohash=snapshot["infohash"],
+                queued_tasks=0,
+                processed_tasks=0,
+                elapsed_ms=_elapsed_ms(),
+            )
+
+        queued_tasks = 0
+        with db_session() as session:
+            item = db_functions.get_item_by_id(item_id, session=session)
+            if item is None:
+                return ResolveOnPlayResult(
+                    success=False,
+                    status_code=404,
+                    message="Item not found",
+                    item_id=item_id,
+                    resolved=False,
+                    provider=None,
+                    infohash=None,
+                    queued_tasks=0,
+                    processed_tasks=0,
+                    elapsed_ms=_elapsed_ms(),
+                )
+
+            item = session.merge(item)
+            if item.last_state not in (States.Scraped, States.PartiallyCompleted):
+                return ResolveOnPlayResult(
+                    success=False,
+                    status_code=409,
+                    message=f"Item state is {item.last_state}; no playable stream can be resolved yet",
+                    item_id=item_id,
+                    resolved=False,
+                    provider=None,
+                    infohash=None,
+                    queued_tasks=0,
+                    processed_tasks=0,
+                    elapsed_ms=_elapsed_ms(),
+                )
+
+            queued_tasks = self.enqueue_resolution_tasks(
+                item,
+                trigger=DebridTaskTrigger.PLAY,
+                priority=DebridTaskPriority.HIGH,
+                max_streams=max_streams,
+                max_attempts=3,
+            )
+
+        processed_tasks = 0
+        deadline = time.monotonic() + max(1, timeout_seconds)
+        per_tick_limit = max(
+            1,
+            settings_manager.settings.downloaders.orchestrator.shared_queue_max_parallel_tasks,
+        )
+
+        while time.monotonic() < deadline:
+            processed_tasks += self.process_pending_tasks(program, limit=per_tick_limit)
+            snapshot = self._get_item_play_snapshot(item_id)
+
+            if bool(snapshot["resolved"]):
+                return ResolveOnPlayResult(
+                    success=True,
+                    status_code=200,
+                    message="Resolved stream for playback",
+                    item_id=item_id,
+                    resolved=True,
+                    provider=snapshot["provider"],
+                    infohash=snapshot["infohash"],
+                    queued_tasks=queued_tasks,
+                    processed_tasks=processed_tasks,
+                    elapsed_ms=_elapsed_ms(),
+                )
+
+            # No queued/open work remaining and nothing processed in this cycle.
+            if int(snapshot["open_tasks"]) == 0 and processed_tasks == 0:
+                return ResolveOnPlayResult(
+                    success=False,
+                    status_code=409,
+                    message=(
+                        "No provider could resolve a playable stream"
+                        if not snapshot["last_error"]
+                        else f"No provider could resolve a playable stream ({snapshot['last_error']})"
+                    ),
+                    item_id=item_id,
+                    resolved=False,
+                    provider=snapshot["provider"],
+                    infohash=snapshot["infohash"],
+                    queued_tasks=queued_tasks,
+                    processed_tasks=processed_tasks,
+                    elapsed_ms=_elapsed_ms(),
+                )
+
+            time.sleep(0.25)
+
+        snapshot = self._get_item_play_snapshot(item_id)
+        return ResolveOnPlayResult(
+            success=False,
+            status_code=408,
+            message="Timed out waiting for on-play resolution",
+            item_id=item_id,
+            resolved=bool(snapshot["resolved"]),
+            provider=snapshot["provider"],
+            infohash=snapshot["infohash"],
+            queued_tasks=queued_tasks,
+            processed_tasks=processed_tasks,
+            elapsed_ms=_elapsed_ms(),
+        )
 
     def _get_existing_open_infohashes(self, session, item_id: int) -> set[str]:
         rows = (

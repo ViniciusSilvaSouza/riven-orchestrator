@@ -1,4 +1,4 @@
-from .debrid_manager import DebridManager, debrid_manager
+from .debrid_manager import DebridManager, ResolveOnPlayResult, debrid_manager
 from .models import (
     DebridResolutionCache,
     DebridCacheStatus,
@@ -13,6 +13,7 @@ from .rate_limiter import ProviderRateLimiter
 
 __all__ = [
     "DebridManager",
+    "ResolveOnPlayResult",
     "debrid_manager",
     "DebridResolutionCache",
     "DebridResolutionTask",

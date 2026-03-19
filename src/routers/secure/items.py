@@ -18,6 +18,7 @@ from program.media.state import States
 from program.types import Event
 from program.program import Program
 from program.media.models import MediaMetadata
+from program.orchestrator import debrid_manager
 
 from ..models.shared import IdListPayload, MessageResponse
 
@@ -143,6 +144,18 @@ class StateResponse(BaseModel):
 )
 async def get_states() -> StateResponse:
     return StateResponse(states=[state._name_ for state in States], success=True)
+
+
+class ResolveOnPlayResponse(BaseModel):
+    success: bool
+    message: str
+    item_id: int
+    resolved: bool
+    provider: str | None = None
+    infohash: str | None = None
+    queued_tasks: int = 0
+    processed_tasks: int = 0
+    elapsed_ms: int
 
 
 class ItemsResponse(BaseModel):
@@ -498,6 +511,64 @@ async def get_item(
             logger.error(f"Error fetching item with ID {id}: {str(e)}")
 
             raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post(
+    "/{item_id}/resolve_on_play",
+    summary="Resolve On Play",
+    description=(
+        "Attempt immediate debrid resolution for playback. "
+        "Creates HIGH priority orchestration tasks and blocks briefly until resolved or timeout."
+    ),
+    operation_id="resolve_on_play",
+    response_model=ResolveOnPlayResponse,
+)
+async def resolve_on_play(
+    item_id: Annotated[
+        int,
+        Path(
+            description="The ID of the media item",
+            ge=1,
+        ),
+    ],
+    timeout_seconds: Annotated[
+        int,
+        Query(
+            description="Maximum time to wait for a playable stream",
+            ge=1,
+            le=120,
+        ),
+    ] = 20,
+    max_streams: Annotated[
+        int,
+        Query(
+            description="Maximum number of candidate streams to queue for on-play resolution",
+            ge=1,
+            le=20,
+        ),
+    ] = 3,
+) -> ResolveOnPlayResponse:
+    result = debrid_manager.resolve_on_play(
+        di[Program],
+        item_id,
+        timeout_seconds=timeout_seconds,
+        max_streams=max_streams,
+    )
+
+    if result.status_code == status.HTTP_404_NOT_FOUND:
+        raise HTTPException(status_code=result.status_code, detail=result.message)
+
+    return ResolveOnPlayResponse(
+        success=result.success,
+        message=result.message,
+        item_id=result.item_id,
+        resolved=result.resolved,
+        provider=result.provider,
+        infohash=result.infohash,
+        queued_tasks=result.queued_tasks,
+        processed_tasks=result.processed_tasks,
+        elapsed_ms=result.elapsed_ms,
+    )
 
 
 _SKIP_RESET_STATES = frozenset({
