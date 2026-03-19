@@ -248,12 +248,29 @@ class RivenVFS(pyfuse3.Operations):
 
             # Initialize pyfuse3 and start main loop in background thread
             fuse_options = set(pyfuse3.default_options)
-            fuse_options |= {
-                "fsname=rivenvfs",
-                "allow_other",
-            }
+            fuse_options.add("fsname=rivenvfs")
 
-            pyfuse3.init(self, self._mountpoint, fuse_options)
+            if self._is_allow_other_permitted():
+                fuse_options.add("allow_other")
+            else:
+                logger.warning(
+                    "FUSE option 'allow_other' disabled because /etc/fuse.conf "
+                    "does not enable 'user_allow_other'."
+                )
+
+            try:
+                pyfuse3.init(self, self._mountpoint, fuse_options)
+            except RuntimeError as exc:
+                # Extra guard for environments that reject allow_other at mount time.
+                if "allow_other" in fuse_options and "user_allow_other" in str(exc):
+                    logger.warning(
+                        "FUSE rejected 'allow_other'; retrying mount without it. "
+                        "Enable 'user_allow_other' in /etc/fuse.conf to restore shared access."
+                    )
+                    fuse_options.discard("allow_other")
+                    pyfuse3.init(self, self._mountpoint, fuse_options)
+                else:
+                    raise
 
             self.mounted = True
 
@@ -273,6 +290,33 @@ class RivenVFS(pyfuse3.Operations):
         finally:
             self._cleanup_mountpoint(self._mountpoint)
             self.mounted = False
+
+    @staticmethod
+    def _is_allow_other_permitted() -> bool:
+        """
+        Check whether FUSE allows the 'allow_other' mount option.
+
+        Linux requires `user_allow_other` to be present and uncommented in /etc/fuse.conf.
+        """
+
+        fuse_conf_path = "/etc/fuse.conf"
+
+        try:
+            with open(fuse_conf_path, encoding="utf-8") as fuse_conf:
+                for raw_line in fuse_conf:
+                    line = raw_line.strip()
+
+                    if not line or line.startswith("#"):
+                        continue
+
+                    if line == "user_allow_other":
+                        return True
+        except FileNotFoundError:
+            logger.warning(f"{fuse_conf_path} not found; disabling 'allow_other'.")
+        except Exception:
+            logger.exception("Failed to inspect /etc/fuse.conf; disabling 'allow_other'.")
+
+        return False
 
     async def _monitor_stream_timeouts(self) -> None:
         """Background task to monitor and close timed-out streams to clean up resources."""
