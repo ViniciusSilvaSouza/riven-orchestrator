@@ -15,7 +15,7 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 
 ## Current Baseline (as of 2026-03-18)
 
-- EPIC 1: PARTIAL
+- EPIC 1: DONE
 - EPIC 2: DONE
 - EPIC 3: DONE
 - EPIC 4: PARTIAL
@@ -30,9 +30,9 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 
 - [x] Interception exists between scraping/downloader flow.
 - [x] Central manager module exists (`DebridManager`).
-- [ ] Explicit provider wrapper contract implemented (`resolve(hash)`, `check_cache(hash)`).
-- [ ] Wrapper contract covered by tests.
-- Status: PARTIAL
+- [x] Explicit provider wrapper contract implemented (`resolve(hash)`, `check_cache(hash)`).
+- [x] Wrapper contract covered by tests.
+- Status: DONE
 
 ### EPIC 2 - Resolution cache
 
@@ -124,6 +124,5 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 Use this as minimum verification before marking any EPIC as `DONE`:
 
 ```bash
-uv run --no-project --with pytest --with trio --with trio-util --with plexapi --with lxml --with loguru --with kink --with sqlalchemy --with pydantic --with psycopg2-binary --with sqla-wrapper --with rank-torrent-name --with httpx --with requests --with lazy-imports python -m pytest src/tests/test_orchestrator.py src/tests/test_orchestrator_queue.py src/tests/test_orchestrator_play.py -q
+uv run --no-project --with pytest --with trio --with trio-util --with plexapi --with lxml --with loguru --with kink --with sqlalchemy --with pydantic --with psycopg2-binary --with sqla-wrapper --with rank-torrent-name --with httpx --with requests --with lazy-imports python -m pytest src/tests/test_orchestrator.py src/tests/test_orchestrator_queue.py src/tests/test_orchestrator_play.py src/tests/test_orchestrator_provider_wrapper.py -q
 ```
-

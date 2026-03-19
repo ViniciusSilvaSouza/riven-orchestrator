@@ -22,6 +22,7 @@ from program.orchestrator.models import (
     ProviderHealthState,
 )
 from program.orchestrator.provider_registry import ManagedProvider, ProviderRegistry
+from program.orchestrator.provider_wrapper import ProviderResolveStatus, ProviderResolveWrapper
 from program.orchestrator.rate_limiter import ProviderRateLimiter
 from program.settings import settings_manager
 
@@ -645,12 +646,12 @@ class DebridManager:
         from program.db import db_functions
         from program.media.item import Episode, Season
         from program.media.state import States
-        from program.services.downloaders.models import NoMatchingFilesException
         from program.types import Event
         from program.utils.request import CircuitBreakerOpen
 
         assert program.services
         downloader = program.services.downloader
+        provider_wrapper = ProviderResolveWrapper(downloader)
 
         with db_session() as session:
             task = session.get(DebridResolutionTask, task_id)
@@ -739,24 +740,18 @@ class DebridManager:
                     session.add(task)
                     session.commit()
 
-                    container = downloader.validate_stream_on_service(
-                        stream, item, service
+                    resolve_result = provider_wrapper.resolve(
+                        service,
+                        task.infohash,
+                        item=item,
+                        stream=stream,
                     )
-                    if not container:
+                    if resolve_result.status == ProviderResolveStatus.NOT_CACHED:
                         self.save_resolution(
                             stream.infohash, service.key, DebridCacheStatus.NOT_FOUND
                         )
                         last_error = f"Stream not cached on {service.key}"
                         continue
-
-                    result = downloader.download_cached_stream_on_service(
-                        stream, container, service
-                    )
-
-                    if not downloader.update_item_attributes(item, result, service):
-                        raise NoMatchingFilesException(
-                            f"No valid files found for {item.log_string} ({item.id})"
-                        )
 
                     self.save_resolution(
                         stream.infohash, service.key, DebridCacheStatus.CACHED

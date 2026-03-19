@@ -9,6 +9,13 @@ from .models import (
     ProviderHealthState,
 )
 from .provider_registry import ManagedProvider, ProviderRegistry
+from .provider_wrapper import (
+    ProviderCacheResult,
+    ProviderNoMatchingFilesError,
+    ProviderResolveResult,
+    ProviderResolveStatus,
+    ProviderResolveWrapper,
+)
 from .rate_limiter import ProviderRateLimiter
 
 __all__ = [
@@ -24,5 +31,10 @@ __all__ = [
     "ProviderHealthState",
     "ManagedProvider",
     "ProviderRegistry",
+    "ProviderCacheResult",
+    "ProviderNoMatchingFilesError",
+    "ProviderResolveResult",
+    "ProviderResolveStatus",
+    "ProviderResolveWrapper",
     "ProviderRateLimiter",
 ]
