@@ -19,7 +19,7 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 - EPIC 2: DONE
 - EPIC 3: DONE
 - EPIC 4: DONE
-- EPIC 5: PARTIAL
+- EPIC 5: DONE
 - EPIC 6: DONE
 - EPIC 7: DONE
 - EPIC 8: PARTIAL
@@ -65,9 +65,9 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 - [x] Scheduler polling with feature flag exists.
 - [x] Priority levels exist (high/normal/low).
 - [x] Parallel task processing exists.
-- [ ] Dedicated worker isolation per provider exists as explicit component.
-- [ ] Tests for provider-worker fairness/isolation exist.
-- Status: PARTIAL
+- [x] Dedicated worker isolation per provider exists as explicit component.
+- [x] Tests for provider-worker fairness/isolation exist.
+- Status: DONE
 
 ### EPIC 6 - Resolve on play
 

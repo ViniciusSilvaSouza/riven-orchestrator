@@ -28,6 +28,7 @@ from program.orchestrator.provider_wrapper import (
     ProviderResolveStatus,
     ProviderResolveWrapper,
 )
+from program.orchestrator.provider_workers import ProviderQueueWorkers
 from program.orchestrator.rate_limiter import ProviderRateLimiter
 from program.settings import settings_manager
 
@@ -64,6 +65,7 @@ class DebridManager:
         self._rate_limiters: dict[str, ProviderRateLimiter] = {}
         self._provider_state_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
+        self._provider_workers = ProviderQueueWorkers()
         self._negative_ttl = timedelta(
             minutes=settings_manager.settings.downloaders.orchestrator.cache_negative_ttl_minutes
         )
@@ -541,32 +543,27 @@ class DebridManager:
             with db_session() as session:
                 due_tasks = self._get_due_tasks(session, limit=max(limit * 3, limit))
 
-            task_batch = self._select_parallel_task_batch(
+            task_lanes = self._build_provider_task_lanes(
                 due_tasks,
                 downloader.initialized_services,
                 limit=limit,
             )
 
-            if not task_batch:
+            if not task_lanes:
                 return 0
 
-            max_workers = min(max(1, limit), len(task_batch))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [
-                    executor.submit(self._process_single_task, program, task_id)
-                    for task_id in task_batch
-                ]
-
-                for future in as_completed(futures):
-                    try:
-                        with self._metrics_lock:
-                            self._queue_processed_total += 1
-                        if future.result():
-                            processed += 1
-                    except Exception as exc:
-                        logger.debug(
-                            f"Parallel orchestrator queue worker failed: {exc}"
-                        )
+            worker_result = self._provider_workers.run_provider_lanes(
+                task_lanes,
+                lambda provider, task_id: self._process_single_task(
+                    program,
+                    task_id,
+                    provider_hint=provider,
+                ),
+                max_workers=min(max(1, limit), len(task_lanes)),
+            )
+            with self._metrics_lock:
+                self._queue_processed_total += worker_result.attempted_tasks
+            processed += worker_result.successful_tasks
         except Exception as exc:
             logger.error(f"Failed processing debrid resolution queue: {exc}")
 
@@ -647,7 +644,36 @@ class DebridManager:
 
         return selected
 
-    def _process_single_task(self, program: "Program", task_id: int) -> bool:
+    def _build_provider_task_lanes(
+        self,
+        due_tasks: list[DueTaskCandidate],
+        services: list["DownloaderBase"],
+        *,
+        limit: int,
+    ) -> dict[str, list[int]]:
+        if not due_tasks:
+            return {}
+
+        selected_ids = self._select_parallel_task_batch(due_tasks, services, limit=limit)
+        task_by_id = {task.task_id: task for task in due_tasks}
+
+        lanes = defaultdict(list)
+        for task_id in selected_ids:
+            task = task_by_id.get(task_id)
+            if task is None:
+                continue
+            provider_key = self._preferred_provider_for_infohash(services, task.infohash)
+            lanes[provider_key].append(task_id)
+
+        return dict(lanes)
+
+    def _process_single_task(
+        self,
+        program: "Program",
+        task_id: int,
+        *,
+        provider_hint: str | None = None,
+    ) -> bool:
         from program.db import db_functions
         from program.media.item import Episode, Season
         from program.media.state import States
@@ -709,6 +735,10 @@ class DebridManager:
             stream_infohash = stream.infohash
 
         providers = self.select_providers(downloader.initialized_services, task.infohash)
+        if provider_hint:
+            hinted = [service for service in providers if service.key == provider_hint]
+            others = [service for service in providers if service.key != provider_hint]
+            providers = hinted + others
         if not providers:
             self._requeue_task(
                 task_id,

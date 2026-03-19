@@ -306,3 +306,34 @@ def test_probe_provider_caches_parallel_records_not_found_for_uncached(monkeypat
     assert "Stream not cached on" in error
     assert len(saved) == 2
     assert all(status == DebridCacheStatus.NOT_FOUND for _, status in saved)
+
+
+def test_build_provider_task_lanes_groups_tasks_per_provider(monkeypatch):
+    manager = DebridManager()
+    services = [Mock(key="realdebrid"), Mock(key="alldebrid")]
+    now = datetime.utcnow()
+    due_tasks = [
+        DueTaskCandidate(task_id=1, infohash="h1", priority=DebridTaskPriority.NORMAL, available_at=now),
+        DueTaskCandidate(task_id=2, infohash="h2", priority=DebridTaskPriority.NORMAL, available_at=now),
+        DueTaskCandidate(task_id=3, infohash="h3", priority=DebridTaskPriority.NORMAL, available_at=now),
+        DueTaskCandidate(task_id=4, infohash="h4", priority=DebridTaskPriority.NORMAL, available_at=now),
+    ]
+    provider_map = {
+        "h1": "realdebrid",
+        "h2": "realdebrid",
+        "h3": "alldebrid",
+        "h4": "alldebrid",
+    }
+
+    monkeypatch.setattr(
+        manager,
+        "_preferred_provider_for_infohash",
+        lambda services, infohash: provider_map[infohash],
+    )
+
+    lanes = manager._build_provider_task_lanes(due_tasks, services, limit=4)
+
+    assert lanes == {
+        "realdebrid": [1, 2],
+        "alldebrid": [3, 4],
+    }

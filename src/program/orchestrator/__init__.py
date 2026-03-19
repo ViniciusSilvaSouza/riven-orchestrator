@@ -16,6 +16,7 @@ from .provider_wrapper import (
     ProviderResolveStatus,
     ProviderResolveWrapper,
 )
+from .provider_workers import ProviderQueueWorkers, ProviderWorkerRunResult
 from .rate_limiter import ProviderRateLimiter
 
 __all__ = [
@@ -36,5 +37,7 @@ __all__ = [
     "ProviderResolveResult",
     "ProviderResolveStatus",
     "ProviderResolveWrapper",
+    "ProviderQueueWorkers",
+    "ProviderWorkerRunResult",
     "ProviderRateLimiter",
 ]
