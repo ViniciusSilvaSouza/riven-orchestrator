@@ -2,15 +2,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Generic, TypeAlias, TypeVar
+from typing import Any, Generic, TypeAlias
+from typing_extensions import TypeVar
 
 from program.settings.models import Observable
 from program.media.item import MediaItem
 
-TSettings = TypeVar("TSettings", bound=Observable | None, covariant=True)
-TService = TypeVar("TService", bound=Any | None)
-TItemType = TypeVar("TItemType", bound=MediaItem, covariant=True)
-TRunnerReturnType = TypeVar("TRunnerReturnType")
+TItemType = TypeVar(
+    "TItemType", bound=MediaItem, default=MediaItem, covariant=True
+)
 
 
 @dataclass
@@ -23,6 +23,19 @@ TGeneratorItem = TypeVar("TGeneratorItem", bound=MediaItem, covariant=True)
 MediaItemGenerator: TypeAlias = Generator[
     RunnerResult[TGeneratorItem], None, RunnerResult[TGeneratorItem] | None
 ]
+
+TSettings = TypeVar(
+    "TSettings",
+    bound=Observable | None,
+    default=Observable,
+    covariant=True,
+)
+TService = TypeVar("TService", bound=Any | None, default=Any)
+TRunnerReturnType = TypeVar(
+    "TRunnerReturnType",
+    bound=MediaItemGenerator | dict[str, str] | bool | None,
+    default=MediaItemGenerator,
+)
 
 
 class Runner(ABC, Generic[TSettings, TService, TRunnerReturnType]):
