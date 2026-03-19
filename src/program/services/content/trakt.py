@@ -1,7 +1,8 @@
 """Trakt content module"""
 
 from datetime import datetime, timedelta
-from typing import Any, Literal, TypeIs
+from typing import Any, Literal
+from typing_extensions import TypeIs
 
 from kink import di
 from loguru import logger
