@@ -122,6 +122,21 @@ class DebridOrchestratorModel(Observable):
         ge=1,
         description="Maximum number of queued resolution tasks to process per scheduler tick",
     )
+    cooldown_minutes_rate_limited: int = Field(
+        default=2,
+        ge=1,
+        description="Cooldown duration in minutes when provider is rate limited",
+    )
+    cooldown_minutes_timeout: int = Field(
+        default=2,
+        ge=1,
+        description="Cooldown duration in minutes when provider request times out",
+    )
+    cooldown_minutes_down: int = Field(
+        default=5,
+        ge=1,
+        description="Cooldown duration in minutes when provider is unavailable",
+    )
     rate_limits: DebridOrchestratorRateLimitModel = Field(
         default_factory=lambda: DebridOrchestratorRateLimitModel(),
         description="Per-provider orchestration rate-limit settings",

@@ -225,9 +225,7 @@ class Downloader(Runner[None, DownloaderBase]):
                         if (
                             settings_manager.settings.downloaders.orchestrator.enabled
                         ):
-                            debrid_manager.mark_provider_error(
-                                service.key, rate_limited=True
-                            )
+                            debrid_manager.record_provider_exception(service.key, e)
                         logger.warning(
                             f"Circuit breaker OPEN for {service.key}, trying next service for stream {stream.infohash}"
                         )
@@ -252,6 +250,7 @@ class Downloader(Runner[None, DownloaderBase]):
                                 service.key,
                                 DebridCacheStatus.ERROR,
                             )
+                            debrid_manager.record_provider_exception(service.key, e)
 
                         if download_result and download_result.id:
                             try:

@@ -73,6 +73,7 @@ class OrchestratorProviderStatus(BaseModel):
     key: str
     health: str
     cooldown_until: str | None = None
+    last_error: str | None = None
     total_attempts: int
     total_successes: int
     total_failures: int
@@ -89,6 +90,7 @@ class OrchestratorStatusResponse(BaseModel):
     priority_order: list[str]
     negative_ttl_minutes: int
     shared_queue_enabled: bool
+    metrics: dict[str, object]
     queue: dict[str, object]
     providers: list[OrchestratorProviderStatus]
 

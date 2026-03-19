@@ -5,10 +5,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import time
+import threading
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from program.db.db import db_session
 from program.orchestrator.models import (
@@ -55,6 +56,8 @@ class DebridManager:
     def __init__(self) -> None:
         self._registry = ProviderRegistry()
         self._rate_limiters: dict[str, ProviderRateLimiter] = {}
+        self._provider_state_lock = threading.Lock()
+        self._metrics_lock = threading.Lock()
         self._negative_ttl = timedelta(
             minutes=settings_manager.settings.downloaders.orchestrator.cache_negative_ttl_minutes
         )
@@ -65,6 +68,14 @@ class DebridManager:
             settings_manager.settings.downloaders.orchestrator.provider_priority
         )
         self._queue_backoff = timedelta(minutes=1)
+        self._cache_hits = 0
+        self._cache_negative_hits = 0
+        self._cache_misses = 0
+        self._queue_processed_total = 0
+        self._queue_resolved_total = 0
+        self._queue_failed_total = 0
+        self._queue_requeued_total = 0
+        self._last_queue_run_at: datetime | None = None
         self._configure_limiters()
 
     def _configure_limiters(self) -> None:
@@ -166,17 +177,18 @@ class DebridManager:
         )
 
     def record_provider_attempt(self, provider: str) -> bool:
-        managed = self._registry.get(provider)
-        if managed is None:
-            return False
+        with self._provider_state_lock:
+            managed = self._registry.get(provider)
+            if managed is None:
+                return False
 
-        limiter = self._rate_limiters.get(provider)
-        if limiter and not limiter.consume():
-            return False
+            limiter = self._rate_limiters.get(provider)
+            if limiter and not limiter.consume():
+                return False
 
-        managed.total_attempts += 1
-        managed.last_selected_at = datetime.utcnow()
-        return True
+            managed.total_attempts += 1
+            managed.last_selected_at = datetime.utcnow()
+            return True
 
     def enqueue_resolution_tasks(
         self,
@@ -516,6 +528,7 @@ class DebridManager:
 
         downloader = program.services.downloader
         self.sync_services(downloader.initialized_services)
+        self._last_queue_run_at = datetime.utcnow()
 
         processed = 0
         try:
@@ -540,6 +553,8 @@ class DebridManager:
 
                 for future in as_completed(futures):
                     try:
+                        with self._metrics_lock:
+                            self._queue_processed_total += 1
                         if future.result():
                             processed += 1
                     except Exception as exc:
@@ -771,12 +786,12 @@ class DebridManager:
                         f"Resolved queued stream {stream.infohash} for {item.log_string} using {service.key}"
                     )
                     return True
-            except CircuitBreakerOpen:
-                self.mark_provider_error(service.key, rate_limited=True)
+            except CircuitBreakerOpen as exc:
+                self.record_provider_exception(service.key, exc)
                 last_error = f"Circuit breaker open for {service.key}"
             except Exception as exc:
                 self.save_resolution(task.infohash, service.key, DebridCacheStatus.ERROR)
-                self.mark_provider_error(service.key)
+                self.record_provider_exception(service.key, exc)
                 last_error = str(exc)
                 logger.debug(
                     f"Queued resolution failed for {task.infohash} on {service.key}: {exc}"
@@ -835,6 +850,8 @@ class DebridManager:
             task.last_error = error
             session.add(task)
             session.commit()
+            with self._metrics_lock:
+                self._queue_requeued_total += 1
 
     def _finalize_task(self, session, task: DebridResolutionTask, *, status: DebridTaskStatus, error: str | None) -> None:
         now = datetime.utcnow()
@@ -848,6 +865,11 @@ class DebridManager:
         task.updated_at = now
         task.last_error = error
         session.add(task)
+        with self._metrics_lock:
+            if status == DebridTaskStatus.COMPLETED:
+                self._queue_resolved_total += 1
+            elif status == DebridTaskStatus.FAILED:
+                self._queue_failed_total += 1
 
     def get_cached(self, infohash: str, provider: str) -> DebridCacheStatus | None:
         try:
@@ -858,12 +880,23 @@ class DebridManager:
                     .where(DebridResolutionCache.provider == provider)
                 )
                 if result is None:
+                    with self._metrics_lock:
+                        self._cache_misses += 1
                     return None
                 if (
                     result.status == DebridCacheStatus.NOT_FOUND
                     and result.last_checked < datetime.utcnow() - self._negative_ttl
                 ):
+                    with self._metrics_lock:
+                        self._cache_misses += 1
                     return None
+                with self._metrics_lock:
+                    if result.status == DebridCacheStatus.CACHED:
+                        self._cache_hits += 1
+                    elif result.status == DebridCacheStatus.NOT_FOUND:
+                        self._cache_negative_hits += 1
+                    else:
+                        self._cache_misses += 1
                 return result.status
         except Exception as exc:
             logger.debug(f"Debrid cache lookup failed for {provider}:{infohash}: {exc}")
@@ -895,27 +928,68 @@ class DebridManager:
         except Exception as exc:
             logger.debug(f"Debrid cache persist failed for {provider}:{infohash}: {exc}")
 
-    def mark_provider_error(self, provider: str, *, rate_limited: bool = False, cooldown_minutes: int = 1) -> None:
-        managed = self._registry.get(provider)
-        if managed is None:
-            return
-        managed.health = (
-            ProviderHealthState.RATE_LIMITED if rate_limited else ProviderHealthState.DOWN
+    def _classify_provider_exception(self, exc: Exception) -> tuple[bool, int, str]:
+        orchestrator_settings = settings_manager.settings.downloaders.orchestrator
+        error_text = str(exc).lower()
+        exc_name = exc.__class__.__name__.lower()
+
+        if "429" in error_text or "rate limit" in error_text or "circuitbreakeropen" in exc_name:
+            return (
+                True,
+                orchestrator_settings.cooldown_minutes_rate_limited,
+                "rate_limited",
+            )
+
+        if "timeout" in error_text or "timeout" in exc_name:
+            return (
+                False,
+                orchestrator_settings.cooldown_minutes_timeout,
+                "timeout",
+            )
+
+        return (False, orchestrator_settings.cooldown_minutes_down, "provider_down")
+
+    def record_provider_exception(self, provider: str, exc: Exception) -> None:
+        rate_limited, cooldown_minutes, classification = self._classify_provider_exception(exc)
+        self.mark_provider_error(
+            provider,
+            rate_limited=rate_limited,
+            cooldown_minutes=cooldown_minutes,
+            reason=f"{classification}: {exc}",
         )
-        managed.cooldown_until = datetime.utcnow() + timedelta(minutes=cooldown_minutes)
-        managed.total_failures += 1
-        managed.consecutive_failures += 1
-        managed.last_failure_at = datetime.utcnow()
+
+    def mark_provider_error(
+        self,
+        provider: str,
+        *,
+        rate_limited: bool = False,
+        cooldown_minutes: int = 1,
+        reason: str | None = None,
+    ) -> None:
+        with self._provider_state_lock:
+            managed = self._registry.get(provider)
+            if managed is None:
+                return
+            managed.health = (
+                ProviderHealthState.RATE_LIMITED if rate_limited else ProviderHealthState.DOWN
+            )
+            managed.cooldown_until = datetime.utcnow() + timedelta(minutes=cooldown_minutes)
+            managed.total_failures += 1
+            managed.consecutive_failures += 1
+            managed.last_failure_at = datetime.utcnow()
+            managed.last_error = reason
 
     def mark_provider_healthy(self, provider: str) -> None:
-        managed = self._registry.get(provider)
-        if managed is None:
-            return
-        managed.health = ProviderHealthState.HEALTHY
-        managed.cooldown_until = None
-        managed.total_successes += 1
-        managed.consecutive_failures = 0
-        managed.last_success_at = datetime.utcnow()
+        with self._provider_state_lock:
+            managed = self._registry.get(provider)
+            if managed is None:
+                return
+            managed.health = ProviderHealthState.HEALTHY
+            managed.cooldown_until = None
+            managed.total_successes += 1
+            managed.consecutive_failures = 0
+            managed.last_success_at = datetime.utcnow()
+            managed.last_error = None
 
     def get_status_snapshot(self) -> dict[str, object]:
         providers = list[dict[str, object]]()
@@ -949,6 +1023,7 @@ class DebridManager:
                         if managed.last_failure_at
                         else None
                     ),
+                    "last_error": managed.last_error,
                     "rate_limit": {
                         "requests_per_minute": (
                             limiter.requests_per_minute if limiter else None
@@ -972,10 +1047,27 @@ class DebridManager:
             DebridTaskStatus.FAILED.value: 0,
             DebridTaskStatus.CANCELLED.value: 0,
         }
+        cache_counts = {
+            DebridCacheStatus.CACHED.value: 0,
+            DebridCacheStatus.NOT_FOUND.value: 0,
+            DebridCacheStatus.ERROR.value: 0,
+        }
         next_task = None
 
         try:
             with db_session() as session:
+                cache_rows = (
+                    session.execute(
+                        select(
+                            DebridResolutionCache.status,
+                            func.count(DebridResolutionCache.id),
+                        ).group_by(DebridResolutionCache.status)
+                    )
+                    .all()
+                )
+                for status, count in cache_rows:
+                    cache_counts[status.value] = count
+
                 queue_rows = (
                     session.execute(
                         select(
@@ -1004,12 +1096,55 @@ class DebridManager:
         except Exception as exc:
             logger.debug(f"Failed to inspect orchestrator queue status: {exc}")
 
+        total_cache_entries = sum(cache_counts.values())
+        with self._metrics_lock:
+            cache_hits = self._cache_hits
+            cache_negative_hits = self._cache_negative_hits
+            cache_misses = self._cache_misses
+            queue_processed_total = self._queue_processed_total
+            queue_resolved_total = self._queue_resolved_total
+            queue_failed_total = self._queue_failed_total
+            queue_requeued_total = self._queue_requeued_total
+
+        total_cache_lookups = cache_hits + cache_negative_hits + cache_misses
+        cache_hit_ratio = (
+            cache_hits / total_cache_lookups if total_cache_lookups > 0 else 0.0
+        )
+        cache_negative_hit_ratio = (
+            cache_negative_hits / total_cache_lookups
+            if total_cache_lookups > 0
+            else 0.0
+        )
+
         return {
             "enabled": settings_manager.settings.downloaders.orchestrator.enabled,
             "strategy": self._strategy,
             "priority_order": self._priority_order,
             "negative_ttl_minutes": int(self._negative_ttl.total_seconds() / 60),
             "shared_queue_enabled": settings_manager.settings.downloaders.orchestrator.shared_queue,
+            "metrics": {
+                "cache": {
+                    "entries_total": total_cache_entries,
+                    "entries_by_status": cache_counts,
+                    "lookups_total": total_cache_lookups,
+                    "hits": cache_hits,
+                    "negative_hits": cache_negative_hits,
+                    "misses": cache_misses,
+                    "hit_ratio": cache_hit_ratio,
+                    "negative_hit_ratio": cache_negative_hit_ratio,
+                },
+                "queue": {
+                    "processed_total": queue_processed_total,
+                    "resolved_total": queue_resolved_total,
+                    "failed_total": queue_failed_total,
+                    "requeued_total": queue_requeued_total,
+                    "last_run_at": (
+                        self._last_queue_run_at.isoformat()
+                        if self._last_queue_run_at
+                        else None
+                    ),
+                },
+            },
             "queue": {
                 "counts": queue_counts,
                 "next_task": (

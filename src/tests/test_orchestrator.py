@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from program.orchestrator.debrid_manager import DebridManager, DueTaskCandidate
 from program.orchestrator.models import DebridCacheStatus
-from program.orchestrator.models import DebridTaskPriority
+from program.orchestrator.models import DebridTaskPriority, ProviderHealthState
 from program.orchestrator.rate_limiter import ProviderRateLimiter
 
 
@@ -180,3 +180,46 @@ def test_parallel_batch_round_robin_by_provider(monkeypatch):
     selected = manager._select_parallel_task_batch(due_tasks, services, limit=4)
 
     assert selected == [1, 3, 2, 4]
+
+
+def test_record_provider_exception_classifies_rate_limit():
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+    manager.sync_services([service])
+
+    manager.record_provider_exception("realdebrid", RuntimeError("429 too many requests"))
+    managed = manager._registry.get("realdebrid")
+
+    assert managed is not None
+    assert managed.health == ProviderHealthState.RATE_LIMITED
+    assert managed.last_error is not None
+    assert "rate_limited" in managed.last_error
+
+
+def test_record_provider_exception_classifies_timeout():
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+    manager.sync_services([service])
+
+    manager.record_provider_exception("realdebrid", TimeoutError("connection timeout"))
+    managed = manager._registry.get("realdebrid")
+
+    assert managed is not None
+    assert managed.health == ProviderHealthState.DOWN
+    assert managed.cooldown_until is not None
+    assert managed.last_error is not None
+    assert "timeout" in managed.last_error
+
+
+def test_status_snapshot_exposes_metrics_and_last_error():
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+    manager.sync_services([service])
+    manager.mark_provider_error("realdebrid", reason="provider_down: connection error")
+
+    snapshot = manager.get_status_snapshot()
+
+    assert "metrics" in snapshot
+    assert "cache" in snapshot["metrics"]
+    assert "queue" in snapshot["metrics"]
+    assert snapshot["providers"][0]["last_error"] is not None
