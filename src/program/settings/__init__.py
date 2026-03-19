@@ -1,12 +1,13 @@
-from collections.abc import Callable, Generator
+import contextvars
 import json
 import os
-import contextvars
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Any, cast
 
 from loguru import logger
 from pydantic import ValidationError
+from RTN.models import SettingsModel
 
 from program.settings.models import AppModel, Observable
 from program.utils import data_dir_path
@@ -19,7 +20,9 @@ class SettingsManager:
         self.observers = list[Callable[[], Any]]()
         self.filename = os.environ.get("SETTINGS_FILENAME", "settings.json")
         self.settings_file = data_dir_path / self.filename
-        self._overrides_ctx = contextvars.ContextVar("settings_overrides", default={})
+        self._overrides_ctx: contextvars.ContextVar[dict[str, Any] | None] = (
+            contextvars.ContextVar("settings_overrides", default=None)
+        )
 
         Observable.set_notify_observers(self.notify_observers)
 
@@ -45,65 +48,65 @@ class SettingsManager:
         for observer in self.observers:
             observer()
 
+    def _environment_candidates(self, prefix: str, key: str) -> list[str]:
+        candidates = [f"{prefix}_{key}".upper()]
+        if prefix == "RIVEN" and key == "api_key":
+            candidates.append("API_KEY")
+        return candidates
+
+    def _environment_override(self, prefix: str, key: str) -> tuple[str, str] | None:
+        for candidate in self._environment_candidates(prefix, key):
+            override = os.getenv(candidate)
+            if override is not None:
+                return candidate, override
+        return None
+
+    def _coerce_environment_value(
+        self,
+        current_value: Any,
+        override_value: str,
+        environment_variable: str,
+    ) -> Any:
+        if isinstance(current_value, bool):
+            return override_value.lower() == "true" or override_value == "1"
+        if isinstance(current_value, int):
+            return int(override_value)
+        if isinstance(current_value, float):
+            return float(override_value)
+        if isinstance(current_value, list):
+            if override_value.startswith("["):
+                return json.loads(override_value)
+
+            logger.error(
+                f"Environment variable {environment_variable} for list type must be a JSON array string. Got {override_value}."
+            )
+            return current_value
+
+        return override_value
+
     def check_environment(
         self,
         settings: dict[str, Any],
         prefix: str = "",
         separator: str = "_",
-    ):
+    ) -> dict[str, Any]:
         checked_settings = dict[str, Any]()
 
         for key, value in settings.items():
             if isinstance(value, dict):
-                sub_checked_settings = self.check_environment(
+                checked_settings[key] = self.check_environment(
                     settings=cast(dict[str, Any], value),
                     prefix=f"{prefix}{separator}{key}",
+                    separator=separator,
                 )
-                checked_settings[key] = sub_checked_settings
-            else:
-                environment_variable = f"{prefix}_{key}".upper()
-                fallback_environment_variables = []
+                continue
 
-                # Backward compatibility for the top-level API key:
-                # historically the project has used API_KEY in .env,
-                # while the recursive override loader expects RIVEN_API_KEY.
-                if prefix == "RIVEN" and key == "api_key":
-                    fallback_environment_variables.append("API_KEY")
-
-                selected_environment_variable = environment_variable
-                selected_environment_value = os.getenv(environment_variable, None)
-
-                if selected_environment_value is None:
-                    for fallback_environment_variable in fallback_environment_variables:
-                        fallback_value = os.getenv(fallback_environment_variable, None)
-                        if fallback_value is not None:
-                            selected_environment_variable = fallback_environment_variable
-                            selected_environment_value = fallback_value
-                            break
-
-                if selected_environment_value is not None:
-                    new_value = selected_environment_value
-
-                    if new_value is None:
-                        checked_settings[key] = value
-                    elif isinstance(value, bool):
-                        checked_settings[key] = (
-                            new_value.lower() == "true" or new_value == "1"
-                        )
-                    elif isinstance(value, int):
-                        checked_settings[key] = int(new_value)
-                    elif isinstance(value, float):
-                        checked_settings[key] = float(new_value)
-                    elif isinstance(value, list) and new_value.startswith("["):
-                        checked_settings[key] = json.loads(new_value)
-                    elif isinstance(value, list):
-                        logger.error(
-                            f"Environment variable {selected_environment_variable} for list type must be a JSON array string. Got {new_value}."
-                        )
-                    else:
-                        checked_settings[key] = new_value
-                else:
-                    checked_settings[key] = value
+            override = self._environment_override(prefix, key)
+            checked_settings[key] = (
+                value
+                if override is None
+                else self._coerce_environment_value(value, override[1], override[0])
+            )
 
         return checked_settings
 
@@ -148,7 +151,7 @@ class SettingsManager:
     @contextmanager
     def override(self, **overrides: Any) -> Generator[None, None, None]:
         """Context manager to temporarily override settings."""
-        old_overrides = self._overrides_ctx.get()
+        old_overrides = self._overrides_ctx.get() or {}
         token = self._overrides_ctx.set({**old_overrides, **overrides})
         try:
             yield
@@ -162,25 +165,23 @@ class SettingsManager:
 
     def get_setting(self, key: str, default: Any) -> Any:
         """Get a setting value, respecting any active overrides."""
-        overrides = self._overrides_ctx.get()
+        overrides = self._overrides_ctx.get() or {}
         if overrides and key in overrides:
             return overrides[key]
         return default
 
     def get_effective_rtn_model(self):
         """Get the effective RTN settings, merging global settings with active overrides."""
-        from RTN.models import SettingsModel
-
         # Start with global settings
         ranking_settings = self.settings.ranking.model_dump()
-        
+
         # Apply overrides
-        overrides = self._overrides_ctx.get()
+        overrides = self._overrides_ctx.get() or {}
         if overrides:
             valid_keys = SettingsModel.model_fields.keys()
             filtered_overrides = {k: v for k, v in overrides.items() if k in valid_keys}
             ranking_settings.update(filtered_overrides)
-            
+
         return SettingsModel(**ranking_settings)
 
 

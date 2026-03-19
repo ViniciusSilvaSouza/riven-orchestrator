@@ -1,8 +1,9 @@
 from copy import copy
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, cast, get_args, get_origin
 
 from fastapi import APIRouter, Body, HTTPException, Path, Query
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic.fields import FieldInfo
 
 from program.settings import settings_manager
 from program.settings.models import AppModel
@@ -14,6 +15,8 @@ router = APIRouter(
     tags=["settings"],
     responses={404: {"description": "Not found"}},
 )
+
+FieldPath = list[tuple[str, FieldInfo]]
 
 
 def _resolve_path(current_settings: dict[str, Any], path: str) -> Any:
@@ -100,6 +103,149 @@ def _compat_value(current_settings: dict[str, Any], path: str) -> Any:
     return compat.get(path)
 
 
+def _parse_requested_keys(keys: str) -> list[str]:
+    requested_keys = [key.strip() for key in keys.split(",") if key.strip()]
+    if requested_keys:
+        return requested_keys
+
+    raise HTTPException(
+        status_code=400,
+        detail="At least one key must be provided",
+    )
+
+
+def _unwrap_model_annotation(annotation: Any) -> type[BaseModel] | None:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+
+    origin = get_origin(annotation)
+    if origin is None:
+        return None
+
+    for arg in get_args(annotation):
+        if arg is type(None):
+            continue
+        if isinstance(arg, type) and issubclass(arg, BaseModel):
+            return arg
+
+    return None
+
+
+def _resolve_model_field_path(path: str) -> FieldPath:
+    parts = path.split(".")
+    current_model: type[BaseModel] = AppModel
+    resolved_fields: FieldPath = []
+
+    for index, part in enumerate(parts):
+        model_fields = current_model.model_fields
+        field_info = model_fields.get(part)
+        if field_info is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid path: {path}",
+            )
+
+        resolved_fields.append((part, field_info))
+
+        if index == len(parts) - 1:
+            continue
+
+        next_model = _unwrap_model_annotation(field_info.annotation)
+        if next_model is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid nested path: {path}",
+            )
+        current_model = next_model
+
+    return resolved_fields
+
+
+def _ensure_container_schema(
+    target_properties: dict[str, Any],
+    target_required: list[str],
+    field_name: str,
+    field_info: FieldInfo,
+) -> dict[str, Any]:
+    container_schema = target_properties.get(field_name)
+    if not isinstance(container_schema, dict):
+        title_value = field_info.title or field_name.replace("_", " ").title()
+        container_schema = {
+            "title": title_value,
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
+        target_properties[field_name] = container_schema
+
+    if field_info.is_required() and field_name not in target_required:
+        target_required.append(field_name)
+
+    return container_schema
+
+
+def _field_json_schema(
+    field_info: FieldInfo,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    adapter: TypeAdapter[Any] = TypeAdapter(field_info.annotation)
+    field_schema = cast(
+        dict[str, Any],
+        adapter.json_schema(ref_template="#/$defs/{model}"),
+    )
+    defs = cast(dict[str, Any], field_schema.pop("$defs", {}))
+    return field_schema, defs
+
+
+def _add_requested_field_schema(
+    properties: dict[str, Any],
+    required: list[str],
+    all_defs: dict[str, Any],
+    path: str,
+) -> None:
+    resolved_fields = _resolve_model_field_path(path)
+    field_name, target_field_info = resolved_fields[-1]
+    field_schema, defs = _field_json_schema(target_field_info)
+    all_defs.update(defs)
+
+    current_properties = properties
+    current_required = required
+
+    for parent_name, parent_field_info in resolved_fields[:-1]:
+        container_schema = _ensure_container_schema(
+            current_properties,
+            current_required,
+            parent_name,
+            parent_field_info,
+        )
+        current_properties = cast(dict[str, Any], container_schema["properties"])
+        current_required = cast(list[str], container_schema["required"])
+
+    current_properties[field_name] = field_schema
+    if target_field_info.is_required() and field_name not in current_required:
+        current_required.append(field_name)
+
+
+def _build_filtered_schema(requested_keys: list[str], title: str) -> dict[str, Any]:
+    all_defs: dict[str, Any] = {}
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+
+    for key in requested_keys:
+        _add_requested_field_schema(properties, required, all_defs, key)
+
+    filtered_schema: dict[str, Any] = {
+        "properties": properties,
+        "required": required,
+        "title": title,
+        "type": "object",
+    }
+
+    if all_defs:
+        filtered_schema["$defs"] = all_defs
+
+    return filtered_schema
+
+
 @router.get(
     "/schema",
     operation_id="get_settings_schema",
@@ -120,7 +266,7 @@ async def get_settings_schema_for_keys(
     keys: Annotated[
         str,
         Query(
-            description="Comma-separated list of top-level keys to get schema for (e.g., 'version,api_key,updaters')",
+            description="Comma-separated list of settings keys or nested paths to get schema for (e.g., 'api_key,updaters,downloaders.orchestrator')",
             min_length=1,
         ),
     ],
@@ -131,51 +277,8 @@ async def get_settings_schema_for_keys(
         ),
     ] = "FilteredSettings",
 ) -> dict[str, Any]:
-    model_fields = AppModel.model_fields
-    requested_keys = [k.strip() for k in keys.split(",") if k.strip()]
-
-    if not requested_keys:
-        raise HTTPException(
-            status_code=400,
-            detail="At least one key must be provided",
-        )
-
-    valid_keys = set(model_fields.keys())
-    invalid_keys = [k for k in requested_keys if k not in valid_keys]
-    if invalid_keys:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid keys: {', '.join(invalid_keys)}. Valid keys are: {', '.join(sorted(valid_keys))}",
-        )
-
-    all_defs: dict[str, Any] = {}
-    properties: dict[str, Any] = {}
-    required: list[str] = []
-
-    for key in requested_keys:
-        field_info = model_fields[key]
-        adapter: TypeAdapter[Any] = TypeAdapter(field_info.annotation)
-        field_schema = adapter.json_schema(ref_template="#/$defs/{model}")
-
-        if "$defs" in field_schema:
-            all_defs.update(field_schema.pop("$defs"))
-
-        properties[key] = field_schema
-
-        if field_info.is_required():
-            required.append(key)
-
-    filtered_schema: dict[str, Any] = {
-        "properties": properties,
-        "required": required,
-        "title": title,
-        "type": "object",
-    }
-
-    if all_defs:
-        filtered_schema["$defs"] = all_defs
-
-    return filtered_schema
+    requested_keys = _parse_requested_keys(keys)
+    return _build_filtered_schema(requested_keys, title)
 
 
 @router.get(

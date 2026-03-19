@@ -51,7 +51,10 @@ services:
       - media
 
   riven_frontend:
-    image: spoked/riven-frontend:v0.21.2
+    build:
+      context: ../../../riven-frontend
+      dockerfile: Dockerfile
+    image: riven-frontend:dev-local
     container_name: riven-frontend
     restart: unless-stopped
     ports:
