@@ -124,5 +124,5 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 Use this as minimum verification before marking any EPIC as `DONE`:
 
 ```bash
-uv run --no-project --with pytest --with trio --with trio-util --with plexapi --with lxml --with loguru --with kink --with sqlalchemy --with pydantic --with psycopg2-binary --with sqla-wrapper --with rank-torrent-name --with httpx --with requests --with lazy-imports python -m pytest src/tests/test_orchestrator.py src/tests/test_orchestrator_queue.py src/tests/test_orchestrator_play.py src/tests/test_orchestrator_provider_wrapper.py -q
+uv run --no-project --with pytest --with trio --with trio-util --with plexapi --with lxml --with loguru --with kink --with sqlalchemy --with pydantic --with psycopg2-binary --with sqla-wrapper --with rank-torrent-name --with httpx --with requests --with lazy-imports python -m pytest src/tests/test_orchestrator.py src/tests/test_orchestrator_queue.py src/tests/test_orchestrator_play.py src/tests/test_orchestrator_provider_wrapper.py src/tests/test_orchestrator_provider_workers.py src/tests/test_orchestrator_settings_env.py -q
 ```

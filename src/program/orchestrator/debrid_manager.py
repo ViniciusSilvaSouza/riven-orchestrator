@@ -37,6 +37,13 @@ if TYPE_CHECKING:
     from program.services.downloaders.shared import DownloaderBase
 
 
+def _log_debrid(message: str) -> None:
+    try:
+        logger.log("DEBRID", message)
+    except ValueError:
+        logger.info(message)
+
+
 @dataclass
 class ResolveOnPlayResult:
     success: bool
@@ -371,6 +378,10 @@ class DebridManager:
         def _elapsed_ms() -> int:
             return int((datetime.utcnow() - started_at).total_seconds() * 1000)
 
+        _log_debrid(
+            f"Resolve-on-play requested for item={item_id}, timeout={timeout_seconds}s, max_streams={max_streams}"
+        )
+
         if not program.services or not program.services.downloader.initialized:
             return ResolveOnPlayResult(
                 success=False,
@@ -453,6 +464,7 @@ class DebridManager:
                 max_streams=max_streams,
                 max_attempts=3,
             )
+            _log_debrid(f"Resolve-on-play queued {queued_tasks} task(s) for item={item_id}")
 
         processed_tasks = 0
         deadline = time.monotonic() + max(1, timeout_seconds)
@@ -466,6 +478,9 @@ class DebridManager:
             snapshot = self._get_item_play_snapshot(item_id)
 
             if bool(snapshot["resolved"]):
+                _log_debrid(
+                    f"Resolve-on-play succeeded for item={item_id} with provider={snapshot['provider']} in {processed_tasks} processed task(s)"
+                )
                 return ResolveOnPlayResult(
                     success=True,
                     status_code=200,
@@ -481,6 +496,9 @@ class DebridManager:
 
             # No queued/open work remaining and nothing processed in this cycle.
             if int(snapshot["open_tasks"]) == 0 and processed_tasks == 0:
+                logger.warning(
+                    f"Resolve-on-play failed for item={item_id}: no provider could resolve stream ({snapshot['last_error']})"
+                )
                 return ResolveOnPlayResult(
                     success=False,
                     status_code=409,
@@ -501,6 +519,9 @@ class DebridManager:
             time.sleep(0.25)
 
         snapshot = self._get_item_play_snapshot(item_id)
+        logger.warning(
+            f"Resolve-on-play timed out for item={item_id} after {timeout_seconds}s (open_tasks={snapshot['open_tasks']}, processed={processed_tasks})"
+        )
         return ResolveOnPlayResult(
             success=False,
             status_code=408,
@@ -552,6 +573,11 @@ class DebridManager:
             if not task_lanes:
                 return 0
 
+            _log_debrid(
+                f"Orchestrator queue tick: due_tasks={len(due_tasks)}, lanes={len(task_lanes)}, limit={limit}"
+            )
+            logger.debug(f"Orchestrator provider lanes: {task_lanes}")
+
             worker_result = self._provider_workers.run_provider_lanes(
                 task_lanes,
                 lambda provider, task_id: self._process_single_task(
@@ -564,6 +590,12 @@ class DebridManager:
             with self._metrics_lock:
                 self._queue_processed_total += worker_result.attempted_tasks
             processed += worker_result.successful_tasks
+            _log_debrid(
+                "Orchestrator queue workers completed: "
+                f"attempted={worker_result.attempted_tasks}, "
+                f"successful={worker_result.successful_tasks}, "
+                f"providers={worker_result.providers_used}"
+            )
         except Exception as exc:
             logger.error(f"Failed processing debrid resolution queue: {exc}")
 
@@ -739,6 +771,9 @@ class DebridManager:
             hinted = [service for service in providers if service.key == provider_hint]
             others = [service for service in providers if service.key != provider_hint]
             providers = hinted + others
+            logger.debug(
+                f"Task {task_id} provider hint='{provider_hint}', ordered providers={[service.key for service in providers]}"
+            )
         if not providers:
             self._requeue_task(
                 task_id,
@@ -763,6 +798,9 @@ class DebridManager:
             )
             return False
 
+        logger.debug(
+            f"Task {task_id} probing cache in parallel across providers={[service.key for service in eligible_services]}"
+        )
         probe_item = SimpleNamespace(id=item_id, type=item_type, log_string=item_log_string)
         probe_stream = SimpleNamespace(infohash=stream_infohash)
         selected_service, selected_cache, probe_error = self._probe_provider_caches_parallel(
@@ -773,12 +811,19 @@ class DebridManager:
             probe_stream,
         )
         if selected_service is None or selected_cache is None:
+            logger.warning(
+                f"Task {task_id} failed cache probe across providers: {probe_error or last_error}"
+            )
             self._requeue_task(
                 task_id,
                 error=probe_error or last_error,
                 delay=self._queue_backoff * 5,
             )
             return False
+
+        _log_debrid(
+            f"Task {task_id} selected provider={selected_service.key} after parallel cache probe"
+        )
 
         try:
             with db_session() as session:
@@ -892,6 +937,9 @@ class DebridManager:
 
         max_workers = max(1, len(services))
         last_error = ""
+        logger.debug(
+            f"Starting parallel cache probe for infohash={infohash} providers={[service.key for service in services]}"
+        )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(
@@ -912,9 +960,15 @@ class DebridManager:
                         for pending in future_map:
                             if pending is not future:
                                 pending.cancel()
+                        _log_debrid(
+                            f"Cache probe winner for infohash={infohash}: provider={service.key}"
+                        )
                         return (service, cache_result, "")
 
                     self.save_resolution(infohash, service.key, DebridCacheStatus.NOT_FOUND)
+                    logger.debug(
+                        f"Cache probe miss for infohash={infohash} on provider={service.key}"
+                    )
                     last_error = f"Stream not cached on {service.key}"
                 except Exception as exc:
                     self.save_resolution(infohash, service.key, DebridCacheStatus.ERROR)
@@ -971,6 +1025,9 @@ class DebridManager:
             session.commit()
             with self._metrics_lock:
                 self._queue_requeued_total += 1
+            logger.warning(
+                f"Requeued task {task_id} (attempt {task.attempts}/{task.max_attempts}) in {int(delay.total_seconds())}s: {error}"
+            )
 
     def _finalize_task(self, session, task: DebridResolutionTask, *, status: DebridTaskStatus, error: str | None) -> None:
         now = datetime.utcnow()
@@ -1070,6 +1127,10 @@ class DebridManager:
 
     def record_provider_exception(self, provider: str, exc: Exception) -> None:
         rate_limited, cooldown_minutes, classification = self._classify_provider_exception(exc)
+        logger.warning(
+            "Provider error classified: "
+            f"provider={provider}, class={classification}, cooldown={cooldown_minutes}m, error={exc}"
+        )
         self.mark_provider_error(
             provider,
             rate_limited=rate_limited,
@@ -1103,12 +1164,17 @@ class DebridManager:
             managed = self._registry.get(provider)
             if managed is None:
                 return
+            previous_health = managed.health
             managed.health = ProviderHealthState.HEALTHY
             managed.cooldown_until = None
             managed.total_successes += 1
             managed.consecutive_failures = 0
             managed.last_success_at = datetime.utcnow()
             managed.last_error = None
+            if previous_health != ProviderHealthState.HEALTHY:
+                _log_debrid(
+                    f"Provider recovered: provider={provider}, previous_state={previous_health.value}"
+                )
 
     def get_status_snapshot(self) -> dict[str, object]:
         providers = list[dict[str, object]]()
