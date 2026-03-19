@@ -22,7 +22,7 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 - EPIC 5: DONE
 - EPIC 6: DONE
 - EPIC 7: DONE
-- EPIC 8: PARTIAL
+- EPIC 8: DONE
 
 ## EPIC Acceptance Checklist
 
@@ -88,9 +88,9 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 ### EPIC 8 - Configuration
 
 - [x] Settings model exposes orchestrator knobs.
-- [ ] `.env.example` documents orchestrator controls clearly.
-- [ ] Runtime validation/tests for full config surface.
-- Status: PARTIAL
+- [x] `.env.example` documents orchestrator controls clearly.
+- [x] Runtime validation/tests for full config surface.
+- Status: DONE
 
 ## Execution Plan to Reach 100%
 
