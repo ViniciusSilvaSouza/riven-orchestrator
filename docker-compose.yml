@@ -1,74 +1,75 @@
 services:
-    # riven-frontend:
-    #     image: spoked/riven-frontend:latest
-    #     container_name: riven-frontend
-    #     restart: unless-stopped
-    #     tty: true
-    #     environment:
-    #         - TZ=Etc/UTC
-    #     ports:
-    #         - 3000:3000
-    #     volumes:
-    #         - /path/to/riven/frontend:/riven/config # You need to mount a config directory here (different from riven)
-    #     depends_on:
-    #         riven:
-    #             condition: service_started
-
     riven:
-        image: spoked/riven:latest
+        build:
+            context: .
+            dockerfile: Dockerfile
+        image: riven-orchestrator:latest
         container_name: riven
         restart: unless-stopped
-        ports:
-            - "8080:8080"
         tty: true
+        shm_size: 1024m
+        ports:
+            - "${RIVEN_BACKEND_PORT:-8080}:8080"
+        env_file:
+            - .env
+        environment:
+            - PUID=${PUID:-1000}
+            - PGID=${PGID:-1000}
+            - TZ=${TZ:-UTC}
+            - ORIGIN=${RIVEN_ORIGIN:-http://localhost:8080}
+            - RIVEN_FORCE_ENV=true
+            - RIVEN_DATABASE_HOST=${RIVEN_DATABASE_HOST:-postgresql+psycopg2://postgres:postgres@riven_postgres:5432/riven}
+        devices:
+            - /dev/fuse
         cap_add:
             - SYS_ADMIN
         security_opt:
             - apparmor:unconfined
-        shm_size: 1024m
-        devices:
-            - /dev/fuse
-        environment:
-            - PUID=1000
-            - PGID=1000
-            - TZ=America/New_York
-            - RIVEN_FORCE_ENV=true
-            - RIVEN_DATABASE_HOST=postgresql+psycopg2://postgres:postgres@riven-db/riven
         healthcheck:
-            test: curl -s http://localhost:8080 >/dev/null || exit 1
+            test: ["CMD-SHELL", "curl -s http://localhost:8080 >/dev/null || exit 1"]
             interval: 30s
             timeout: 10s
             retries: 10
         volumes:
-            - /path/to/riven/data:/riven/data
-            - /path/to/riven/mount:/mount:rshared,z
+            - ${RIVEN_DATA_DIR:-./container_data/riven}:/riven/data
+            - ${RIVEN_MOUNT_DIR:-./container_data/mount}:/mount:rshared,z
         depends_on:
             riven_postgres:
                 condition: service_healthy
 
     riven_postgres:
         image: postgres:17-alpine
-        container_name: riven-db
+        container_name: riven_postgres
+        restart: unless-stopped
         environment:
             - PGDATA=/var/lib/postgresql/data/pgdata
-            - POSTGRES_USER=postgres
-            - POSTGRES_PASSWORD=postgres
-            - POSTGRES_DB=riven
+            - POSTGRES_USER=${RIVEN_POSTGRES_USER:-postgres}
+            - POSTGRES_PASSWORD=${RIVEN_POSTGRES_PASSWORD:-postgres}
+            - POSTGRES_DB=${RIVEN_POSTGRES_DB:-riven}
         volumes:
-            - /path/to/riven/db:/var/lib/postgresql/data/pgdata
+            - ${RIVEN_DB_DIR:-./container_data/db}:/var/lib/postgresql/data/pgdata
         healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U postgres"]
+            test: ["CMD-SHELL", "pg_isready -U ${RIVEN_POSTGRES_USER:-postgres}"]
             interval: 10s
             timeout: 5s
             retries: 5
 
     jellyfin:
-        image: jellyfin/jellyfin
+        image: jellyfin/jellyfin:latest
         container_name: jellyfin
-        user: 1000:1000
+        user: ${JELLYFIN_UID:-1000}:${JELLYFIN_GID:-1000}
         restart: unless-stopped
+        profiles:
+            - jellyfin
         ports:
-        - "8096:8096"
+            - "${JELLYFIN_PORT:-8096}:8096"
         volumes:
-        - /path/to/jellyfin/config:/config
-        - /path/to/riven/mount:/mount:rslave,z
+            - ${JELLYFIN_CONFIG_DIR:-./container_data/jellyfin_config}:/config
+            - ${RIVEN_MOUNT_DIR:-./container_data/mount}:/mount:rslave,z
+        depends_on:
+            riven:
+                condition: service_started
+
+networks:
+    default:
+        name: ${RIVEN_NETWORK_NAME:-riven_net}
