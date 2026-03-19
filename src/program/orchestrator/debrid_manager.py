@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import time
@@ -39,6 +41,14 @@ class ResolveOnPlayResult:
     queued_tasks: int
     processed_tasks: int
     elapsed_ms: int
+
+
+@dataclass
+class DueTaskCandidate:
+    task_id: int
+    infohash: str
+    priority: DebridTaskPriority
+    available_at: datetime
 
 
 class DebridManager:
@@ -510,17 +520,38 @@ class DebridManager:
         processed = 0
         try:
             with db_session() as session:
-                due_tasks = self._get_due_tasks(session, limit=limit)
+                due_tasks = self._get_due_tasks(session, limit=max(limit * 3, limit))
 
-            for task_id in due_tasks:
-                if self._process_single_task(program, task_id):
-                    processed += 1
+            task_batch = self._select_parallel_task_batch(
+                due_tasks,
+                downloader.initialized_services,
+                limit=limit,
+            )
+
+            if not task_batch:
+                return 0
+
+            max_workers = min(max(1, limit), len(task_batch))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(self._process_single_task, program, task_id)
+                    for task_id in task_batch
+                ]
+
+                for future in as_completed(futures):
+                    try:
+                        if future.result():
+                            processed += 1
+                    except Exception as exc:
+                        logger.debug(
+                            f"Parallel orchestrator queue worker failed: {exc}"
+                        )
         except Exception as exc:
             logger.error(f"Failed processing debrid resolution queue: {exc}")
 
         return processed
 
-    def _get_due_tasks(self, session, *, limit: int) -> list[int]:
+    def _get_due_tasks(self, session, *, limit: int) -> list[DueTaskCandidate]:
         now = datetime.utcnow()
         due_tasks = (
             session.execute(
@@ -545,7 +576,55 @@ class DebridManager:
                 task.id,
             )
         )
-        return [task.id for task in due_tasks[:limit]]
+        return [
+            DueTaskCandidate(
+                task_id=task.id,
+                infohash=task.infohash,
+                priority=task.priority,
+                available_at=task.available_at,
+            )
+            for task in due_tasks[:limit]
+        ]
+
+    def _preferred_provider_for_infohash(
+        self,
+        services: list["DownloaderBase"],
+        infohash: str,
+    ) -> str:
+        ordered = self.select_providers(services, infohash)
+        if not ordered:
+            return "unassigned"
+        return ordered[0].key
+
+    def _select_parallel_task_batch(
+        self,
+        due_tasks: list[DueTaskCandidate],
+        services: list["DownloaderBase"],
+        *,
+        limit: int,
+    ) -> list[int]:
+        grouped = defaultdict(list)
+        for task in due_tasks:
+            provider_key = self._preferred_provider_for_infohash(services, task.infohash)
+            grouped[provider_key].append(task.task_id)
+
+        selected = list[int]()
+        while grouped and len(selected) < limit:
+            provider_keys = list(grouped.keys())
+            for provider_key in provider_keys:
+                queue = grouped.get(provider_key, [])
+                if not queue:
+                    grouped.pop(provider_key, None)
+                    continue
+
+                selected.append(queue.pop(0))
+                if not queue:
+                    grouped.pop(provider_key, None)
+
+                if len(selected) >= limit:
+                    break
+
+        return selected
 
     def _process_single_task(self, program: "Program", task_id: int) -> bool:
         from program.db import db_functions

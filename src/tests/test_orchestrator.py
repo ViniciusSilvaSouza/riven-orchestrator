@@ -3,8 +3,9 @@ from datetime import datetime, timedelta
 import importlib
 from unittest.mock import Mock
 
-from program.orchestrator.debrid_manager import DebridManager
+from program.orchestrator.debrid_manager import DebridManager, DueTaskCandidate
 from program.orchestrator.models import DebridCacheStatus
+from program.orchestrator.models import DebridTaskPriority
 from program.orchestrator.rate_limiter import ProviderRateLimiter
 
 
@@ -150,3 +151,32 @@ def test_select_providers_does_not_consume_budget_until_attempt(monkeypatch):
     assert manager._rate_limiters["realdebrid"].current_requests() == 0
     assert manager.record_provider_attempt("realdebrid") is True
     assert manager._rate_limiters["realdebrid"].current_requests() == 1
+
+
+def test_parallel_batch_round_robin_by_provider(monkeypatch):
+    manager = DebridManager()
+    services = [Mock(key="realdebrid"), Mock(key="alldebrid")]
+    now = datetime.utcnow()
+    due_tasks = [
+        DueTaskCandidate(task_id=1, infohash="h1", priority=DebridTaskPriority.NORMAL, available_at=now),
+        DueTaskCandidate(task_id=2, infohash="h2", priority=DebridTaskPriority.NORMAL, available_at=now),
+        DueTaskCandidate(task_id=3, infohash="h3", priority=DebridTaskPriority.NORMAL, available_at=now),
+        DueTaskCandidate(task_id=4, infohash="h4", priority=DebridTaskPriority.NORMAL, available_at=now),
+    ]
+
+    provider_map = {
+        "h1": "realdebrid",
+        "h2": "realdebrid",
+        "h3": "alldebrid",
+        "h4": "alldebrid",
+    }
+
+    monkeypatch.setattr(
+        manager,
+        "_preferred_provider_for_infohash",
+        lambda services, infohash: provider_map[infohash],
+    )
+
+    selected = manager._select_parallel_task_batch(due_tasks, services, limit=4)
+
+    assert selected == [1, 3, 2, 4]
