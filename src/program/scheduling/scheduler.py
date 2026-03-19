@@ -24,6 +24,7 @@ from program.scheduling.models import ScheduledStatus, ScheduledTask
 from program.settings import settings_manager
 from program.types import Event
 from program.utils.logging import log_cleaner, logger
+from program.orchestrator import debrid_manager
 from program.apis.tvdb_api import SeriesRelease
 from schemas.tvdb.models.series_airs_days import SeriesAirsDays
 
@@ -86,6 +87,9 @@ class ProgramScheduler:
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}
+        scheduled_functions[self._process_orchestrator_queue] = {
+            "interval": settings_manager.settings.downloaders.orchestrator.shared_queue_poll_seconds
+        }
 
         for func, config in scheduled_functions.items():
             self.scheduler.add_job(
@@ -103,6 +107,24 @@ class ProgramScheduler:
             logger.debug(
                 f"Scheduled {func.__name__} to run every {config['interval']} seconds."
             )
+
+    def _process_orchestrator_queue(self) -> None:
+        if not self.program.services:
+            return
+
+        if not settings_manager.settings.downloaders.orchestrator.enabled:
+            return
+
+        if not settings_manager.settings.downloaders.orchestrator.shared_queue:
+            return
+
+        processed = debrid_manager.process_pending_tasks(
+            self.program,
+            limit=settings_manager.settings.downloaders.orchestrator.shared_queue_max_parallel_tasks,
+        )
+
+        if processed:
+            logger.info(f"Processed {processed} orchestrator queue task(s)")
 
     def _schedule_services(self) -> None:
         """Schedule each content service based on its update interval or webhook mode."""

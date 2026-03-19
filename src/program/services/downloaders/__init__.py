@@ -85,6 +85,21 @@ class Downloader(Runner[None, DownloaderBase]):
         self,
         item: MediaItem,
     ) -> MediaItemGenerator:
+        if (
+            settings_manager.settings.downloaders.orchestrator.enabled
+            and settings_manager.settings.downloaders.orchestrator.shared_queue
+        ):
+            queued = debrid_manager.enqueue_resolution_tasks(item)
+            if queued:
+                logger.info(
+                    f"Queued {queued} debrid resolution task(s) for {item.log_string} ({item.id})"
+                )
+            else:
+                logger.debug(
+                    f"No debrid resolution tasks enqueued for {item.log_string} ({item.id})"
+                )
+            return
+
         logger.debug(f"Starting download process for {item.log_string} ({item.id})")
 
         # Check if all services are in cooldown due to circuit breaker

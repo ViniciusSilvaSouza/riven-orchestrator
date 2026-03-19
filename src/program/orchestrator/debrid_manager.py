@@ -11,6 +11,10 @@ from program.db.db import db_session
 from program.orchestrator.models import (
     DebridCacheStatus,
     DebridResolutionCache,
+    DebridResolutionTask,
+    DebridTaskPriority,
+    DebridTaskStatus,
+    DebridTaskTrigger,
     ProviderHealthState,
 )
 from program.orchestrator.provider_registry import ManagedProvider, ProviderRegistry
@@ -18,6 +22,7 @@ from program.orchestrator.rate_limiter import ProviderRateLimiter
 from program.settings import settings_manager
 
 if TYPE_CHECKING:
+    from program.program import Program
     from program.services.downloaders.shared import DownloaderBase
 
 
@@ -34,6 +39,7 @@ class DebridManager:
         self._priority_order = (
             settings_manager.settings.downloaders.orchestrator.provider_priority
         )
+        self._queue_backoff = timedelta(minutes=1)
         self._configure_limiters()
 
     def _configure_limiters(self) -> None:
@@ -146,6 +152,381 @@ class DebridManager:
         managed.total_attempts += 1
         managed.last_selected_at = datetime.utcnow()
         return True
+
+    def enqueue_resolution_tasks(
+        self,
+        item,
+        *,
+        trigger: DebridTaskTrigger = DebridTaskTrigger.PIPELINE,
+        priority: DebridTaskPriority = DebridTaskPriority.NORMAL,
+        max_attempts: int = 3,
+        max_streams: int = 3,
+    ) -> int:
+        from program.media.state import States
+
+        if item.last_state not in (States.Scraped, States.PartiallyCompleted):
+            return 0
+
+        now = datetime.utcnow()
+        candidate_streams = self._sort_candidate_streams(item.streams)[:max_streams]
+
+        if not candidate_streams:
+            return 0
+
+        try:
+            with db_session() as session:
+                existing_infohashes = self._get_existing_open_infohashes(
+                    session, item.id
+                )
+
+                tasks = list[DebridResolutionTask]()
+                for stream in candidate_streams:
+                    if stream.infohash in existing_infohashes:
+                        continue
+
+                    tasks.append(
+                        DebridResolutionTask(
+                            item_id=item.id,
+                            infohash=stream.infohash,
+                            provider=None,
+                            stream_title=stream.raw_title,
+                            trigger=trigger,
+                            priority=priority,
+                            status=DebridTaskStatus.PENDING,
+                            attempts=0,
+                            max_attempts=max_attempts,
+                            available_at=now,
+                            locked_at=None,
+                            completed_at=None,
+                            last_error=None,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+
+                if not tasks:
+                    return 0
+
+                session.add_all(tasks)
+                session.commit()
+                return len(tasks)
+        except Exception as exc:
+            logger.error(
+                f"Failed to enqueue debrid resolution tasks for item {item.id}: {exc}"
+            )
+            return 0
+
+    def _sort_candidate_streams(self, streams) -> list:
+        resolution_order = {
+            "4k": 9,
+            "2160p": 9,
+            "1440p": 7,
+            "1080p": 6,
+            "720p": 5,
+            "576p": 4,
+            "480p": 3,
+            "360p": 2,
+            "unknown": 1,
+        }
+
+        def _stream_key(stream) -> tuple[int, int]:
+            resolution = (
+                stream.resolution.lower()
+                if getattr(stream, "resolution", None)
+                else "unknown"
+            )
+            return (
+                resolution_order.get(resolution, resolution_order["unknown"]),
+                getattr(stream, "rank", 0),
+            )
+
+        return sorted(streams, key=_stream_key, reverse=True)
+
+    def _get_existing_open_infohashes(self, session, item_id: int) -> set[str]:
+        rows = (
+            session.execute(
+                select(DebridResolutionTask.infohash)
+                .where(DebridResolutionTask.item_id == item_id)
+                .where(
+                    DebridResolutionTask.status.in_(
+                        [DebridTaskStatus.PENDING, DebridTaskStatus.PROCESSING]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return set(rows)
+
+    def process_pending_tasks(self, program: "Program", limit: int = 10) -> int:
+        if not program.services or not program.services.downloader.initialized:
+            return 0
+
+        downloader = program.services.downloader
+        self.sync_services(downloader.initialized_services)
+
+        processed = 0
+        try:
+            with db_session() as session:
+                due_tasks = self._get_due_tasks(session, limit=limit)
+
+            for task_id in due_tasks:
+                if self._process_single_task(program, task_id):
+                    processed += 1
+        except Exception as exc:
+            logger.error(f"Failed processing debrid resolution queue: {exc}")
+
+        return processed
+
+    def _get_due_tasks(self, session, *, limit: int) -> list[int]:
+        now = datetime.utcnow()
+        due_tasks = (
+            session.execute(
+                select(DebridResolutionTask)
+                .where(DebridResolutionTask.status == DebridTaskStatus.PENDING)
+                .where(DebridResolutionTask.available_at <= now)
+            )
+            .scalars()
+            .all()
+        )
+
+        priority_order = {
+            DebridTaskPriority.HIGH: 0,
+            DebridTaskPriority.NORMAL: 1,
+            DebridTaskPriority.LOW: 2,
+        }
+
+        due_tasks.sort(
+            key=lambda task: (
+                priority_order.get(task.priority, 99),
+                task.available_at,
+                task.id,
+            )
+        )
+        return [task.id for task in due_tasks[:limit]]
+
+    def _process_single_task(self, program: "Program", task_id: int) -> bool:
+        from program.db import db_functions
+        from program.media.item import Episode, Season
+        from program.media.state import States
+        from program.services.downloaders.models import NoMatchingFilesException
+        from program.types import Event
+        from program.utils.request import CircuitBreakerOpen
+
+        assert program.services
+        downloader = program.services.downloader
+
+        with db_session() as session:
+            task = session.get(DebridResolutionTask, task_id)
+            if task is None or task.status != DebridTaskStatus.PENDING:
+                return False
+
+            item = db_functions.get_item_by_id(task.item_id, session=session)
+            if item is None:
+                self._finalize_task(
+                    session,
+                    task,
+                    status=DebridTaskStatus.CANCELLED,
+                    error="Item no longer exists",
+                )
+                session.commit()
+                return False
+
+            item = session.merge(item)
+
+            if item.last_state not in (States.Scraped, States.PartiallyCompleted):
+                self._finalize_task(
+                    session,
+                    task,
+                    status=DebridTaskStatus.CANCELLED,
+                    error=f"Item state is {item.last_state}, queue no longer required",
+                )
+                session.commit()
+                return False
+
+            stream = next((s for s in item.streams if s.infohash == task.infohash), None)
+            if stream is None:
+                self._finalize_task(
+                    session,
+                    task,
+                    status=DebridTaskStatus.CANCELLED,
+                    error="Stream no longer exists on item",
+                )
+                session.commit()
+                return False
+
+            task.status = DebridTaskStatus.PROCESSING
+            task.attempts += 1
+            task.locked_at = datetime.utcnow()
+            task.updated_at = datetime.utcnow()
+            session.add(task)
+            session.commit()
+
+        providers = self.select_providers(downloader.initialized_services, task.infohash)
+        if not providers:
+            self._requeue_task(
+                task_id,
+                error="No providers available for task",
+                delay=self._queue_backoff,
+            )
+            return False
+
+        last_error = "No provider could resolve stream"
+        for service in providers:
+            if not self.record_provider_attempt(service.key):
+                last_error = f"No remaining provider budget for {service.key}"
+                continue
+
+            try:
+                with db_session() as session:
+                    task = session.get(DebridResolutionTask, task_id)
+                    item = db_functions.get_item_by_id(task.item_id, session=session)
+                    if task is None or item is None:
+                        return False
+
+                    item = session.merge(item)
+                    stream = next(
+                        (s for s in item.streams if s.infohash == task.infohash), None
+                    )
+                    if stream is None:
+                        self._finalize_task(
+                            session,
+                            task,
+                            status=DebridTaskStatus.CANCELLED,
+                            error="Stream no longer exists on item",
+                        )
+                        session.commit()
+                        return False
+
+                    task.provider = service.key
+                    task.updated_at = datetime.utcnow()
+                    session.add(task)
+                    session.commit()
+
+                    container = downloader.validate_stream_on_service(
+                        stream, item, service
+                    )
+                    if not container:
+                        self.save_resolution(
+                            stream.infohash, service.key, DebridCacheStatus.NOT_FOUND
+                        )
+                        last_error = f"Stream not cached on {service.key}"
+                        continue
+
+                    result = downloader.download_cached_stream_on_service(
+                        stream, container, service
+                    )
+
+                    if not downloader.update_item_attributes(item, result, service):
+                        raise NoMatchingFilesException(
+                            f"No valid files found for {item.log_string} ({item.id})"
+                        )
+
+                    self.save_resolution(
+                        stream.infohash, service.key, DebridCacheStatus.CACHED
+                    )
+                    self.mark_provider_healthy(service.key)
+
+                    item.store_state()
+                    if isinstance(item, Episode):
+                        item.parent.store_state()
+                        item.parent.parent.store_state()
+                    elif isinstance(item, Season):
+                        item.parent.store_state()
+
+                    self._cancel_sibling_tasks(session, item.id, exclude_task_id=task.id)
+                    self._finalize_task(
+                        session,
+                        task,
+                        status=DebridTaskStatus.COMPLETED,
+                        error=None,
+                    )
+                    session.commit()
+
+                    program.em.add_event(
+                        Event(emitted_by="OrchestratorQueue", item_id=item.id)
+                    )
+                    logger.info(
+                        f"Resolved queued stream {stream.infohash} for {item.log_string} using {service.key}"
+                    )
+                    return True
+            except CircuitBreakerOpen:
+                self.mark_provider_error(service.key, rate_limited=True)
+                last_error = f"Circuit breaker open for {service.key}"
+            except Exception as exc:
+                self.save_resolution(task.infohash, service.key, DebridCacheStatus.ERROR)
+                self.mark_provider_error(service.key)
+                last_error = str(exc)
+                logger.debug(
+                    f"Queued resolution failed for {task.infohash} on {service.key}: {exc}"
+                )
+
+        self._requeue_task(
+            task_id,
+            error=last_error,
+            delay=self._queue_backoff * 5,
+        )
+        return False
+
+    def _cancel_sibling_tasks(self, session, item_id: int, *, exclude_task_id: int) -> None:
+        siblings = (
+            session.execute(
+                select(DebridResolutionTask)
+                .where(DebridResolutionTask.item_id == item_id)
+                .where(DebridResolutionTask.id != exclude_task_id)
+                .where(
+                    DebridResolutionTask.status.in_(
+                        [DebridTaskStatus.PENDING, DebridTaskStatus.PROCESSING]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        for sibling in siblings:
+            sibling.status = DebridTaskStatus.CANCELLED
+            sibling.completed_at = datetime.utcnow()
+            sibling.updated_at = datetime.utcnow()
+            sibling.last_error = "Superseded by successful queued resolution"
+            session.add(sibling)
+
+    def _requeue_task(self, task_id: int, *, error: str, delay: timedelta) -> None:
+        with db_session() as session:
+            task = session.get(DebridResolutionTask, task_id)
+            if task is None:
+                return
+
+            if task.attempts >= task.max_attempts:
+                self._finalize_task(
+                    session,
+                    task,
+                    status=DebridTaskStatus.FAILED,
+                    error=error,
+                )
+                session.commit()
+                return
+
+            task.status = DebridTaskStatus.PENDING
+            task.available_at = datetime.utcnow() + delay
+            task.locked_at = None
+            task.updated_at = datetime.utcnow()
+            task.last_error = error
+            session.add(task)
+            session.commit()
+
+    def _finalize_task(self, session, task: DebridResolutionTask, *, status: DebridTaskStatus, error: str | None) -> None:
+        now = datetime.utcnow()
+        task.status = status
+        task.completed_at = now if status in (
+            DebridTaskStatus.COMPLETED,
+            DebridTaskStatus.FAILED,
+            DebridTaskStatus.CANCELLED,
+        ) else task.completed_at
+        task.locked_at = None
+        task.updated_at = now
+        task.last_error = error
+        session.add(task)
 
     def get_cached(self, infohash: str, provider: str) -> DebridCacheStatus | None:
         try:
@@ -263,12 +644,63 @@ class DebridManager:
                 }
             )
 
+        queue_counts = {
+            DebridTaskStatus.PENDING.value: 0,
+            DebridTaskStatus.PROCESSING.value: 0,
+            DebridTaskStatus.COMPLETED.value: 0,
+            DebridTaskStatus.FAILED.value: 0,
+            DebridTaskStatus.CANCELLED.value: 0,
+        }
+        next_task = None
+
+        try:
+            with db_session() as session:
+                queue_rows = (
+                    session.execute(
+                        select(
+                            DebridResolutionTask.status,
+                            DebridResolutionTask.available_at,
+                            DebridResolutionTask.id,
+                        )
+                    )
+                    .all()
+                )
+                for status, available_at, task_id in queue_rows:
+                    queue_counts[status.value] = queue_counts.get(status.value, 0) + 1
+                    if (
+                        next_task is None
+                        or available_at < next_task["available_at"]
+                        or (
+                            available_at == next_task["available_at"]
+                            and task_id < next_task["id"]
+                        )
+                    ):
+                        next_task = {
+                            "id": task_id,
+                            "available_at": available_at,
+                            "status": status.value,
+                        }
+        except Exception as exc:
+            logger.debug(f"Failed to inspect orchestrator queue status: {exc}")
+
         return {
             "enabled": settings_manager.settings.downloaders.orchestrator.enabled,
             "strategy": self._strategy,
             "priority_order": self._priority_order,
             "negative_ttl_minutes": int(self._negative_ttl.total_seconds() / 60),
             "shared_queue_enabled": settings_manager.settings.downloaders.orchestrator.shared_queue,
+            "queue": {
+                "counts": queue_counts,
+                "next_task": (
+                    {
+                        "id": next_task["id"],
+                        "available_at": next_task["available_at"].isoformat(),
+                        "status": next_task["status"],
+                    }
+                    if next_task
+                    else None
+                ),
+            },
             "providers": providers,
         }
 

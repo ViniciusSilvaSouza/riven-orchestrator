@@ -1,5 +1,13 @@
 from .debrid_manager import DebridManager, debrid_manager
-from .models import DebridResolutionCache, DebridCacheStatus, ProviderHealthState
+from .models import (
+    DebridResolutionCache,
+    DebridCacheStatus,
+    DebridResolutionTask,
+    DebridTaskPriority,
+    DebridTaskStatus,
+    DebridTaskTrigger,
+    ProviderHealthState,
+)
 from .provider_registry import ManagedProvider, ProviderRegistry
 from .rate_limiter import ProviderRateLimiter
 
@@ -7,7 +15,11 @@ __all__ = [
     "DebridManager",
     "debrid_manager",
     "DebridResolutionCache",
+    "DebridResolutionTask",
     "DebridCacheStatus",
+    "DebridTaskPriority",
+    "DebridTaskStatus",
+    "DebridTaskTrigger",
     "ProviderHealthState",
     "ManagedProvider",
     "ProviderRegistry",

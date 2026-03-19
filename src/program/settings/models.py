@@ -110,7 +110,17 @@ class DebridOrchestratorModel(Observable):
     )
     shared_queue: bool = Field(
         default=False,
-        description="Feature flag placeholder for shared orchestration queue scheduling",
+        description="Enable persistent shared debrid resolution queue scheduling",
+    )
+    shared_queue_poll_seconds: int = Field(
+        default=15,
+        ge=1,
+        description="Polling interval in seconds for the orchestrator shared queue processor",
+    )
+    shared_queue_max_parallel_tasks: int = Field(
+        default=10,
+        ge=1,
+        description="Maximum number of queued resolution tasks to process per scheduler tick",
     )
     rate_limits: DebridOrchestratorRateLimitModel = Field(
         default_factory=lambda: DebridOrchestratorRateLimitModel(),

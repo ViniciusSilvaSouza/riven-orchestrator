@@ -89,6 +89,7 @@ class OrchestratorStatusResponse(BaseModel):
     priority_order: list[str]
     negative_ttl_minutes: int
     shared_queue_enabled: bool
+    queue: dict[str, object]
     providers: list[OrchestratorProviderStatus]
 
 

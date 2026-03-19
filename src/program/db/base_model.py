@@ -21,6 +21,7 @@ def get_base_metadata() -> MetaData:
     )
     from program.orchestrator import (
         DebridResolutionCache,  # pyright: ignore[reportUnusedImport]
+        DebridResolutionTask,  # pyright: ignore[reportUnusedImport]
     )
     from program.scheduling import (
         ScheduledTask,  # pyright: ignore[reportUnusedImport]
