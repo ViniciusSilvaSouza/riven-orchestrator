@@ -1,0 +1,13 @@
+[Unit]
+Description=Prepare shared bind mount for Riven FUSE propagation
+After=local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mount --bind /srv/riven/mount /srv/riven/mount
+ExecStart=/usr/bin/mount --make-rshared /srv/riven/mount
+
+[Install]
+WantedBy=multi-user.target
