@@ -97,6 +97,31 @@ class ProviderResolveWrapper:
                 download_result=None,
             )
 
+        return self.resolve_cached(
+            provider,
+            infohash,
+            item=item,
+            stream=stream,
+            cache_result=cache_result,
+        )
+
+    def resolve_cached(
+        self,
+        provider: "DownloaderBase",
+        infohash: str,
+        *,
+        item: "MediaItem",
+        stream: "Stream",
+        cache_result: ProviderCacheResult,
+    ) -> ProviderResolveResult:
+        if not cache_result.is_cached:
+            return ProviderResolveResult(
+                infohash=infohash,
+                provider=provider.key,
+                status=ProviderResolveStatus.NOT_CACHED,
+                download_result=None,
+            )
+
         assert cache_result.container is not None
         download_result = self._downloader.download_cached_stream_on_service(
             stream,

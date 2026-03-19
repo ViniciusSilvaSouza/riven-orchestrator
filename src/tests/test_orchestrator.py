@@ -1,11 +1,13 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import importlib
+import time
 from unittest.mock import Mock
 
 from program.orchestrator.debrid_manager import DebridManager, DueTaskCandidate
 from program.orchestrator.models import DebridCacheStatus
 from program.orchestrator.models import DebridTaskPriority, ProviderHealthState
+from program.orchestrator.provider_wrapper import ProviderCacheResult, ProviderResolveStatus
 from program.orchestrator.rate_limiter import ProviderRateLimiter
 
 
@@ -223,3 +225,84 @@ def test_status_snapshot_exposes_metrics_and_last_error():
     assert "cache" in snapshot["metrics"]
     assert "queue" in snapshot["metrics"]
     assert snapshot["providers"][0]["last_error"] is not None
+
+
+def test_probe_provider_caches_parallel_returns_first_cached_provider(monkeypatch):
+    manager = DebridManager()
+    service_a = Mock(key="realdebrid")
+    service_b = Mock(key="alldebrid")
+    saved = []
+
+    class FakeWrapper:
+        def check_cache(self, service, infohash, *, item, stream):
+            if service.key == "realdebrid":
+                time.sleep(0.05)
+                return ProviderCacheResult(
+                    infohash=infohash,
+                    provider=service.key,
+                    status=ProviderResolveStatus.NOT_CACHED,
+                    container=None,
+                )
+            time.sleep(0.01)
+            return ProviderCacheResult(
+                infohash=infohash,
+                provider=service.key,
+                status=ProviderResolveStatus.RESOLVED,
+                container=Mock(),
+            )
+
+    monkeypatch.setattr(
+        manager,
+        "save_resolution",
+        lambda infohash, provider, status: saved.append((provider, status)),
+    )
+
+    provider, cache_result, error = manager._probe_provider_caches_parallel(
+        FakeWrapper(),
+        [service_a, service_b],
+        "abc123",
+        Mock(id=1, type="movie", log_string="Movie"),
+        Mock(infohash="abc123"),
+    )
+
+    assert provider is not None
+    assert provider.key == "alldebrid"
+    assert cache_result is not None
+    assert cache_result.is_cached is True
+    assert error == ""
+
+
+def test_probe_provider_caches_parallel_records_not_found_for_uncached(monkeypatch):
+    manager = DebridManager()
+    service_a = Mock(key="realdebrid")
+    service_b = Mock(key="alldebrid")
+    saved = []
+
+    class FakeWrapper:
+        def check_cache(self, service, infohash, *, item, stream):
+            return ProviderCacheResult(
+                infohash=infohash,
+                provider=service.key,
+                status=ProviderResolveStatus.NOT_CACHED,
+                container=None,
+            )
+
+    monkeypatch.setattr(
+        manager,
+        "save_resolution",
+        lambda infohash, provider, status: saved.append((provider, status)),
+    )
+
+    provider, cache_result, error = manager._probe_provider_caches_parallel(
+        FakeWrapper(),
+        [service_a, service_b],
+        "abc123",
+        Mock(id=1, type="movie", log_string="Movie"),
+        Mock(infohash="abc123"),
+    )
+
+    assert provider is None
+    assert cache_result is None
+    assert "Stream not cached on" in error
+    assert len(saved) == 2
+    assert all(status == DebridCacheStatus.NOT_FOUND for _, status in saved)

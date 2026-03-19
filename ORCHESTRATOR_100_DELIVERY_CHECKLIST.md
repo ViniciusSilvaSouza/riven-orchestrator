@@ -18,7 +18,7 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 - EPIC 1: DONE
 - EPIC 2: DONE
 - EPIC 3: DONE
-- EPIC 4: PARTIAL
+- EPIC 4: DONE
 - EPIC 5: PARTIAL
 - EPIC 6: DONE
 - EPIC 7: DONE
@@ -55,9 +55,9 @@ An EPIC can be marked as `DONE` only when all items below are satisfied:
 - [x] Multiple active providers supported.
 - [x] Strategy modes exist (`priority`, `balanced`).
 - [x] Provider usage persisted via queue/cache/status.
-- [ ] True parallel resolve for same hash across providers.
-- [ ] Test proving parallel same-hash fallback race behavior.
-- Status: PARTIAL
+- [x] True parallel resolve for same hash across providers.
+- [x] Test proving parallel same-hash fallback race behavior.
+- Status: DONE
 
 ### EPIC 5 - Shared queue (feature flag)
 

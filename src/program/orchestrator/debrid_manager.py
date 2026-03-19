@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import time
 import threading
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -22,7 +23,11 @@ from program.orchestrator.models import (
     ProviderHealthState,
 )
 from program.orchestrator.provider_registry import ManagedProvider, ProviderRegistry
-from program.orchestrator.provider_wrapper import ProviderResolveStatus, ProviderResolveWrapper
+from program.orchestrator.provider_wrapper import (
+    ProviderCacheResult,
+    ProviderResolveStatus,
+    ProviderResolveWrapper,
+)
 from program.orchestrator.rate_limiter import ProviderRateLimiter
 from program.settings import settings_manager
 
@@ -647,7 +652,6 @@ class DebridManager:
         from program.media.item import Episode, Season
         from program.media.state import States
         from program.types import Event
-        from program.utils.request import CircuitBreakerOpen
 
         assert program.services
         downloader = program.services.downloader
@@ -699,6 +703,11 @@ class DebridManager:
             session.add(task)
             session.commit()
 
+            item_id = item.id
+            item_log_string = item.log_string
+            item_type = item.type
+            stream_infohash = stream.infohash
+
         providers = self.select_providers(downloader.initialized_services, task.infohash)
         if not providers:
             self._requeue_task(
@@ -709,88 +718,129 @@ class DebridManager:
             return False
 
         last_error = "No provider could resolve stream"
+        eligible_services = []
         for service in providers:
             if not self.record_provider_attempt(service.key):
                 last_error = f"No remaining provider budget for {service.key}"
                 continue
+            eligible_services.append(service)
 
-            try:
-                with db_session() as session:
-                    task = session.get(DebridResolutionTask, task_id)
-                    item = db_functions.get_item_by_id(task.item_id, session=session)
-                    if task is None or item is None:
-                        return False
+        if not eligible_services:
+            self._requeue_task(
+                task_id,
+                error=last_error,
+                delay=self._queue_backoff,
+            )
+            return False
 
-                    item = session.merge(item)
-                    stream = next(
-                        (s for s in item.streams if s.infohash == task.infohash), None
-                    )
-                    if stream is None:
-                        self._finalize_task(
-                            session,
-                            task,
-                            status=DebridTaskStatus.CANCELLED,
-                            error="Stream no longer exists on item",
-                        )
-                        session.commit()
-                        return False
+        probe_item = SimpleNamespace(id=item_id, type=item_type, log_string=item_log_string)
+        probe_stream = SimpleNamespace(infohash=stream_infohash)
+        selected_service, selected_cache, probe_error = self._probe_provider_caches_parallel(
+            provider_wrapper,
+            eligible_services,
+            task.infohash,
+            probe_item,
+            probe_stream,
+        )
+        if selected_service is None or selected_cache is None:
+            self._requeue_task(
+                task_id,
+                error=probe_error or last_error,
+                delay=self._queue_backoff * 5,
+            )
+            return False
 
-                    task.provider = service.key
-                    task.updated_at = datetime.utcnow()
-                    session.add(task)
-                    session.commit()
+        try:
+            with db_session() as session:
+                task = session.get(DebridResolutionTask, task_id)
+                if task is None:
+                    return False
 
-                    resolve_result = provider_wrapper.resolve(
-                        service,
-                        task.infohash,
-                        item=item,
-                        stream=stream,
-                    )
-                    if resolve_result.status == ProviderResolveStatus.NOT_CACHED:
-                        self.save_resolution(
-                            stream.infohash, service.key, DebridCacheStatus.NOT_FOUND
-                        )
-                        last_error = f"Stream not cached on {service.key}"
-                        continue
-
-                    self.save_resolution(
-                        stream.infohash, service.key, DebridCacheStatus.CACHED
-                    )
-                    self.mark_provider_healthy(service.key)
-
-                    item.store_state()
-                    if isinstance(item, Episode):
-                        item.parent.store_state()
-                        item.parent.parent.store_state()
-                    elif isinstance(item, Season):
-                        item.parent.store_state()
-
-                    self._cancel_sibling_tasks(session, item.id, exclude_task_id=task.id)
+                item = db_functions.get_item_by_id(task.item_id, session=session)
+                if item is None:
                     self._finalize_task(
                         session,
                         task,
-                        status=DebridTaskStatus.COMPLETED,
-                        error=None,
+                        status=DebridTaskStatus.CANCELLED,
+                        error="Item no longer exists",
                     )
                     session.commit()
+                    return False
 
-                    program.em.add_event(
-                        Event(emitted_by="OrchestratorQueue", item_id=item.id)
-                    )
-                    logger.info(
-                        f"Resolved queued stream {stream.infohash} for {item.log_string} using {service.key}"
-                    )
-                    return True
-            except CircuitBreakerOpen as exc:
-                self.record_provider_exception(service.key, exc)
-                last_error = f"Circuit breaker open for {service.key}"
-            except Exception as exc:
-                self.save_resolution(task.infohash, service.key, DebridCacheStatus.ERROR)
-                self.record_provider_exception(service.key, exc)
-                last_error = str(exc)
-                logger.debug(
-                    f"Queued resolution failed for {task.infohash} on {service.key}: {exc}"
+                item = session.merge(item)
+                stream = next(
+                    (s for s in item.streams if s.infohash == task.infohash), None
                 )
+                if stream is None:
+                    self._finalize_task(
+                        session,
+                        task,
+                        status=DebridTaskStatus.CANCELLED,
+                        error="Stream no longer exists on item",
+                    )
+                    session.commit()
+                    return False
+
+                task.provider = selected_service.key
+                task.updated_at = datetime.utcnow()
+                session.add(task)
+                session.commit()
+
+                resolve_result = provider_wrapper.resolve_cached(
+                    selected_service,
+                    task.infohash,
+                    item=item,
+                    stream=stream,
+                    cache_result=selected_cache,
+                )
+                if resolve_result.status != ProviderResolveStatus.RESOLVED:
+                    self.save_resolution(
+                        stream.infohash,
+                        selected_service.key,
+                        DebridCacheStatus.NOT_FOUND,
+                    )
+                    self._requeue_task(
+                        task_id,
+                        error=f"Stream not cached on {selected_service.key}",
+                        delay=self._queue_backoff,
+                    )
+                    return False
+
+                self.save_resolution(
+                    stream.infohash, selected_service.key, DebridCacheStatus.CACHED
+                )
+                self.mark_provider_healthy(selected_service.key)
+
+                item.store_state()
+                if isinstance(item, Episode):
+                    item.parent.store_state()
+                    item.parent.parent.store_state()
+                elif isinstance(item, Season):
+                    item.parent.store_state()
+
+                self._cancel_sibling_tasks(session, item.id, exclude_task_id=task.id)
+                self._finalize_task(
+                    session,
+                    task,
+                    status=DebridTaskStatus.COMPLETED,
+                    error=None,
+                )
+                session.commit()
+
+                program.em.add_event(
+                    Event(emitted_by="OrchestratorQueue", item_id=item.id)
+                )
+                logger.info(
+                    f"Resolved queued stream {stream.infohash} for {item.log_string} using {selected_service.key}"
+                )
+                return True
+        except Exception as exc:
+            self.save_resolution(task.infohash, selected_service.key, DebridCacheStatus.ERROR)
+            self.record_provider_exception(selected_service.key, exc)
+            last_error = str(exc)
+            logger.debug(
+                f"Queued resolution failed for {task.infohash} on {selected_service.key}: {exc}"
+            )
 
         self._requeue_task(
             task_id,
@@ -798,6 +848,50 @@ class DebridManager:
             delay=self._queue_backoff * 5,
         )
         return False
+
+    def _probe_provider_caches_parallel(
+        self,
+        provider_wrapper: ProviderResolveWrapper,
+        services: list["DownloaderBase"],
+        infohash: str,
+        item,
+        stream,
+    ) -> tuple["DownloaderBase | None", ProviderCacheResult | None, str]:
+        if not services:
+            return (None, None, "No providers available for cache probing")
+
+        max_workers = max(1, len(services))
+        last_error = ""
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(
+                    provider_wrapper.check_cache,
+                    service,
+                    infohash,
+                    item=item,
+                    stream=stream,
+                ): service
+                for service in services
+            }
+
+            for future in as_completed(future_map):
+                service = future_map[future]
+                try:
+                    cache_result = future.result()
+                    if cache_result.is_cached:
+                        for pending in future_map:
+                            if pending is not future:
+                                pending.cancel()
+                        return (service, cache_result, "")
+
+                    self.save_resolution(infohash, service.key, DebridCacheStatus.NOT_FOUND)
+                    last_error = f"Stream not cached on {service.key}"
+                except Exception as exc:
+                    self.save_resolution(infohash, service.key, DebridCacheStatus.ERROR)
+                    self.record_provider_exception(service.key, exc)
+                    last_error = str(exc)
+
+        return (None, None, last_error or "No provider could resolve stream")
 
     def _cancel_sibling_tasks(self, session, item_id: int, *, exclude_task_id: int) -> None:
         siblings = (
