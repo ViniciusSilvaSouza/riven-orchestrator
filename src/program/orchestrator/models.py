@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import cast
 
 import sqlalchemy
 from sqlalchemy.orm import Mapped, mapped_column
@@ -26,7 +27,14 @@ class DebridResolutionCache(Base):
     infohash: Mapped[str] = mapped_column(sqlalchemy.String(64), index=True)
     provider: Mapped[str] = mapped_column(sqlalchemy.String(32), index=True)
     status: Mapped[DebridCacheStatus] = mapped_column(
-        sqlalchemy.Enum(DebridCacheStatus), nullable=False
+        sqlalchemy.Enum(
+            DebridCacheStatus,
+            name="debridcachestatus",
+            values_callable=lambda enum: [
+                e.value for e in cast(list[DebridCacheStatus], enum)
+            ],
+        ),
+        nullable=False,
     )
     resolved_at: Mapped[datetime | None] = mapped_column(
         sqlalchemy.DateTime, nullable=True

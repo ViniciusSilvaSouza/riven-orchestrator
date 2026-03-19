@@ -10,6 +10,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -19,22 +20,35 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-debrid_cache_status = sa.Enum(
-    "CACHED",
-    "NOT_FOUND",
-    "ERROR",
+debrid_cache_status = postgresql.ENUM(
+    "cached",
+    "not_found",
+    "error",
     name="debridcachestatus",
 )
 
 
 def upgrade() -> None:
     debrid_cache_status.create(op.get_bind(), checkfirst=True)
+    op.execute("ALTER TYPE debridcachestatus ADD VALUE IF NOT EXISTS 'cached'")
+    op.execute("ALTER TYPE debridcachestatus ADD VALUE IF NOT EXISTS 'not_found'")
+    op.execute("ALTER TYPE debridcachestatus ADD VALUE IF NOT EXISTS 'error'")
     op.create_table(
         "DebridResolutionCache",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("infohash", sa.String(length=64), nullable=False),
         sa.Column("provider", sa.String(length=32), nullable=False),
-        sa.Column("status", debrid_cache_status, nullable=False),
+        sa.Column(
+            "status",
+            postgresql.ENUM(
+                "cached",
+                "not_found",
+                "error",
+                name="debridcachestatus",
+                create_type=False,
+            ),
+            nullable=False,
+        ),
         sa.Column("resolved_at", sa.DateTime(), nullable=True),
         sa.Column("last_checked", sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
