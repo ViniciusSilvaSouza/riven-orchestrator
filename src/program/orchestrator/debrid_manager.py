@@ -84,6 +84,10 @@ class DebridManager:
             settings_manager.settings.downloaders.orchestrator.provider_priority
         )
         self._queue_backoff = timedelta(minutes=1)
+        self._stranded_recovery_delay = max(
+            self._negative_ttl,
+            self._queue_backoff * 5,
+        )
         self._processing_stale_after = timedelta(
             seconds=max(
                 60,
@@ -571,6 +575,11 @@ class DebridManager:
             logger.warning(
                 f"Recovered {recovered} stale orchestrator task(s) left in processing state"
             )
+        recovered_items = self._recover_stranded_scraped_items(limit=max(1, limit))
+        if recovered_items:
+            logger.warning(
+                f"Recovered {recovered_items} stranded scraped item(s) with no active queue tasks"
+            )
 
         processed = 0
         try:
@@ -613,6 +622,108 @@ class DebridManager:
             logger.error(f"Failed processing debrid resolution queue: {exc}")
 
         return processed
+
+    def _recover_stranded_scraped_items(self, *, limit: int) -> int:
+        from program.db import db_functions
+        from program.media.item import MediaItem
+        from program.media.state import States
+
+        now = datetime.utcnow()
+        recovered = 0
+        candidate_ids = list[int]()
+
+        try:
+            with db_session() as session:
+                candidates = (
+                    session.execute(
+                        select(MediaItem)
+                        .where(MediaItem.last_state == States.Scraped)
+                        .where(MediaItem.type.in_(["movie", "season", "episode"]))
+                        .order_by(
+                            MediaItem.scraped_at.asc().nullsfirst(),
+                            MediaItem.id.asc(),
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+                for item in candidates:
+                    item = session.merge(item)
+
+                    if item.available_in_vfs or (item.media_entry and item.media_entry.url):
+                        continue
+
+                    if not item.streams:
+                        continue
+
+                    has_open_tasks = session.execute(
+                        select(DebridResolutionTask.id)
+                        .where(DebridResolutionTask.item_id == item.id)
+                        .where(
+                            DebridResolutionTask.status.in_(
+                                [
+                                    DebridTaskStatus.PENDING,
+                                    DebridTaskStatus.PROCESSING,
+                                ]
+                            )
+                        )
+                        .limit(1)
+                    ).scalar_one_or_none()
+
+                    if has_open_tasks is not None:
+                        continue
+
+                    latest_task = (
+                        session.execute(
+                            select(DebridResolutionTask)
+                            .where(DebridResolutionTask.item_id == item.id)
+                            .order_by(
+                                DebridResolutionTask.updated_at.desc(),
+                                DebridResolutionTask.id.desc(),
+                            )
+                        )
+                        .scalars()
+                        .first()
+                    )
+
+                    if latest_task is not None:
+                        if latest_task.status not in (
+                            DebridTaskStatus.FAILED,
+                            DebridTaskStatus.CANCELLED,
+                        ):
+                            continue
+
+                        if latest_task.updated_at > now - self._stranded_recovery_delay:
+                            continue
+
+                    candidate_ids.append(item.id)
+                    if len(candidate_ids) >= limit:
+                        break
+
+            for item_id in candidate_ids:
+                with db_session() as session:
+                    item = db_functions.get_item_by_id(item_id, session=session)
+                    if item is None:
+                        continue
+
+                    item = session.merge(item)
+                    queued = self.enqueue_resolution_tasks(
+                        item,
+                        trigger=DebridTaskTrigger.RETRY,
+                        priority=DebridTaskPriority.NORMAL,
+                        max_attempts=3,
+                        max_streams=3,
+                    )
+                    if queued:
+                        recovered += 1
+                        logger.info(
+                            f"Recovered stranded queued resolution work for {item.log_string} ({item.id})"
+                        )
+        except Exception as exc:
+            logger.error(f"Failed recovering stranded scraped items: {exc}")
+
+        return recovered
 
     def _recover_stale_processing_tasks(self) -> int:
         cutoff = datetime.utcnow() - self._processing_stale_after
@@ -834,6 +945,7 @@ class DebridManager:
                 task_id,
                 error="No providers available for task",
                 delay=self._queue_backoff,
+                consume_attempt=False,
             )
             return False
 
@@ -850,6 +962,7 @@ class DebridManager:
                 task_id,
                 error=last_error,
                 delay=self._queue_backoff,
+                consume_attempt=False,
             )
             return False
 
@@ -1076,11 +1189,21 @@ class DebridManager:
             sibling.last_error = "Superseded by successful queued resolution"
             session.add(sibling)
 
-    def _requeue_task(self, task_id: int, *, error: str, delay: timedelta) -> None:
+    def _requeue_task(
+        self,
+        task_id: int,
+        *,
+        error: str,
+        delay: timedelta,
+        consume_attempt: bool = True,
+    ) -> None:
         with db_session() as session:
             task = session.get(DebridResolutionTask, task_id)
             if task is None:
                 return
+
+            if not consume_attempt and task.attempts > 0:
+                task.attempts -= 1
 
             if task.attempts >= task.max_attempts:
                 self._finalize_task(
