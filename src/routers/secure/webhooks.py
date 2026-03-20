@@ -3,7 +3,6 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Request
 from loguru import logger
 
-from program.media.item import MediaItem
 from program.services.content.overseerr import Overseerr
 from program.program import Program
 
@@ -58,26 +57,26 @@ async def overseerr(request: Request) -> OverseerrWebhookResponse:
                 message="Overseerr not initialized",
             )
 
-        item_type = req.media.media_type
+        request_payload = {
+            "id": req.request.request_id if req.request else None,
+            "media": {
+                "tmdbId": req.media.tmdbId,
+                "tvdbId": req.media.tvdbId,
+            },
+        }
 
-        new_item = None
+        if req.request:
+            request_details = overseerr.api.get_request_details(
+                int(req.request.request_id)
+            )
+            if request_details:
+                request_payload = request_details
 
-        if item_type == "movie":
-            new_item = MediaItem(
-                {
-                    "tmdb_id": req.media.tmdbId,
-                    "requested_by": "overseerr",
-                    "overseerr_id": req.request.request_id if req.request else None,
-                }
-            )
-        elif item_type == "tv":
-            new_item = MediaItem(
-                {
-                    "tvdb_id": req.media.tvdbId,
-                    "requested_by": "overseerr",
-                    "overseerr_id": req.request.request_id if req.request else None,
-                }
-            )
+        new_item = overseerr.api.build_media_item(
+            "overseerr",
+            request_payload,
+            requested_seasons=req.requested_seasons,
+        )
 
         if not new_item:
             logger.error(

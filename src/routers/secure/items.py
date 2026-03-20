@@ -925,16 +925,18 @@ async def remove_item(
                             refresh_paths.append(refresh_path)
 
             # 3. Delete from Overseerr
-            if item.overseerr_id and overseerr:
+            request_id = item.requested_id or item.overseerr_id
+
+            if request_id and overseerr:
                 try:
-                    overseerr.api.delete_request(item.overseerr_id)
+                    overseerr.api.delete_request(request_id)
 
                     logger.debug(
-                        f"Deleted Overseerr request {item.overseerr_id} for {item.id}"
+                        f"Deleted Overseerr request {request_id} for {item.id}"
                     )
                 except Exception as e:
                     logger.warning(
-                        f"Failed to delete Overseerr request {item.overseerr_id}: {e}"
+                        f"Failed to delete Overseerr request {request_id}: {e}"
                     )
 
             # 4. Remove from VFS

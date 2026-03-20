@@ -41,6 +41,22 @@ class Updater(Runner[None, BaseUpdater]):
 
         return len(initialized_services) > 0
 
+    @staticmethod
+    def _sync_overseerr_status(item: MediaItem) -> None:
+        try:
+            from kink import di
+
+            from program.program import Program
+
+            services = di[Program].services
+
+            if not services or not services.overseerr:
+                return
+
+            services.overseerr.sync_availability(item)
+        except Exception as e:
+            logger.debug(f"Failed to sync Seerr availability for {item.log_string}: {e}")
+
     def run(self, item: MediaItem) -> MediaItemGenerator:
         """
         Update media servers for the given item.
@@ -107,6 +123,7 @@ class Updater(Runner[None, BaseUpdater]):
         logger.info(
             f"Updated {item.log_string} ({len(refreshed_paths)} unique paths refreshed)"
         )
+        self._sync_overseerr_status(item)
 
         yield RunnerResult(media_items=[item])
 

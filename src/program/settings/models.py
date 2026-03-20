@@ -620,6 +620,13 @@ class OverseerrModel(Updatable):
     use_webhook: bool = Field(
         default=False, description="Use webhook instead of polling"
     )
+    sync_status: bool = Field(
+        default=True,
+        description=(
+            "Sync Riven availability back to Seerr/Overseerr when content becomes "
+            "available in the library"
+        ),
+    )
     update_interval: int = Field(
         default=60, ge=1, description="Update interval in seconds"
     )

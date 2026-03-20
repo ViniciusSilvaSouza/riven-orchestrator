@@ -1,5 +1,6 @@
 """Overseerr API client."""
 
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from loguru import logger
@@ -30,6 +31,13 @@ class OverseerrAPI:
     MEDIA_PROCESSING = 3
     MEDIA_PARTIALLY_AVAILABLE = 4
     MEDIA_AVAILABLE = 5
+
+    MEDIA_STATUS_UNKNOWN = "unknown"
+    MEDIA_STATUS_PENDING = "pending"
+    MEDIA_STATUS_PROCESSING = "processing"
+    MEDIA_STATUS_PARTIALLY_AVAILABLE = "partially_available"
+    MEDIA_STATUS_AVAILABLE = "available"
+    MEDIA_STATUS_DELETED = "deleted"
 
     def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
@@ -82,6 +90,106 @@ class OverseerrAPI:
         )
 
         return any(media.get(field) not in (None, "", []) for field in link_fields)
+
+    @staticmethod
+    def _coerce_optional_int(value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _normalize_requested_seasons(cls, value: Any) -> list[int] | None:
+        if value in (None, ""):
+            return None
+
+        normalized = list[int]()
+
+        if isinstance(value, str):
+            raw_values: Iterable[Any] = value.split(",")
+        elif isinstance(value, list):
+            raw_values = value
+        else:
+            raw_values = [value]
+
+        for raw_value in raw_values:
+            season_number: Any = raw_value
+
+            if isinstance(raw_value, dict):
+                season_number = (
+                    raw_value.get("seasonNumber")
+                    or raw_value.get("season_number")
+                    or raw_value.get("number")
+                )
+
+            season = cls._coerce_optional_int(season_number)
+
+            if season is not None and season not in normalized:
+                normalized.append(season)
+
+        return normalized or None
+
+    @classmethod
+    def _extract_requested_seasons(
+        cls,
+        request: dict[str, Any],
+        requested_seasons: list[int] | None = None,
+    ) -> list[int] | None:
+        if requested_seasons:
+            return cls._normalize_requested_seasons(requested_seasons)
+
+        media = request.get("media") or {}
+
+        for candidate in (
+            request.get("requestedSeasons"),
+            request.get("requested_seasons"),
+            request.get("seasons"),
+            media.get("requestedSeasons"),
+            media.get("requested_seasons"),
+            media.get("seasons"),
+        ):
+            normalized = cls._normalize_requested_seasons(candidate)
+            if normalized:
+                return normalized
+
+        return None
+
+    @classmethod
+    def build_media_item(
+        cls,
+        service_key: str,
+        request: dict[str, Any],
+        requested_seasons: list[int] | None = None,
+    ) -> MediaItem | None:
+        media = request.get("media") or {}
+        tmdb_id = media.get("tmdbId")
+        tvdb_id = media.get("tvdbId")
+        payload = {
+            "requested_by": service_key,
+            "requested_id": cls._coerce_optional_int(request.get("id")),
+            "overseerr_id": cls._coerce_optional_int(media.get("id")),
+            "requested_seasons": cls._extract_requested_seasons(
+                request,
+                requested_seasons=requested_seasons,
+            ),
+        }
+
+        if tvdb_id is not None:
+            payload["tvdb_id"] = tvdb_id
+            return MediaItem(payload)
+
+        if tmdb_id is not None:
+            payload["tmdb_id"] = tmdb_id
+            return MediaItem(payload)
+
+        logger.error(
+            "Could not determine ID for overseerr item: {}",
+            request.get("id"),
+        )
+        return None
 
     @classmethod
     def _is_actionable_request(
@@ -187,54 +295,87 @@ class OverseerrAPI:
                 completed_unlinked_count,
             )
 
-        media_items: list[MediaItem] = []
-
-        for item in actionable_requests:
-            media = item.get("media") or {}
-            tmdb_id = media.get("tmdbId")
-            tvdb_id = media.get("tvdbId")
-
-            if tvdb_id is not None:
-                media_items.append(
-                    MediaItem(
-                        {
-                            "tvdb_id": tvdb_id,
-                            "requested_by": service_key,
-                            "overseerr_id": item.get("id"),
-                        }
-                    )
-                )
-                continue
-
-            if tmdb_id is not None:
-                media_items.append(
-                    MediaItem(
-                        {
-                            "tmdb_id": tmdb_id,
-                            "requested_by": service_key,
-                            "overseerr_id": item.get("id"),
-                        }
-                    )
-                )
-                continue
-
-            logger.error(f"Could not determine ID for overseerr item: {item.get('id')}")
+        media_items = [
+            media_item
+            for item in actionable_requests
+            if (media_item := self.build_media_item(service_key, item)) is not None
+        ]
 
         return media_items
 
-    def delete_request(self, mediaId: int) -> bool:
-        """Delete request from Overseerr."""
+    def get_request_details(self, request_id: int) -> dict[str, Any] | None:
+        """Fetch a single request payload from Seerr/Overseerr."""
 
         try:
-            response = self.session.delete(f"api/v1/request/{mediaId}")
+            response = self.session.get(f"api/v1/request/{request_id}")
 
-            logger.debug(f"Deleted request {mediaId} from Overseerr")
+            if response.ok:
+                return response.json()
+
+            logger.warning(
+                "Failed to get overseerr request {} details: {}",
+                request_id,
+                response.data,
+            )
+        except Exception as e:
+            logger.error(f"Failed to get overseerr request details: {str(e)}")
+
+        return None
+
+    def delete_request(self, request_id: int) -> bool:
+        """Delete request from Seerr/Overseerr."""
+
+        try:
+            response = self.session.delete(f"api/v1/request/{request_id}")
+
+            logger.debug(f"Deleted request {request_id} from Overseerr")
 
             return response.ok
         except Exception as e:
             logger.error(f"Failed to delete request from Overseerr: {str(e)}")
 
             return False
+
+    def update_media_status(
+        self,
+        media_id: int,
+        status: Literal[
+            "unknown",
+            "pending",
+            "processing",
+            "partially_available",
+            "available",
+            "deleted",
+        ],
+        *,
+        is_4k: bool = False,
+    ) -> bool:
+        """Update media availability status in Seerr/Overseerr."""
+
+        try:
+            response = self.session.post(
+                f"api/v1/media/{media_id}/{status}",
+                json={"is4k": is_4k},
+            )
+
+            if response.ok:
+                logger.info(
+                    "Updated Seerr media {} status to {}",
+                    media_id,
+                    status,
+                )
+                return True
+
+            logger.warning(
+                "Failed to update Seerr media {} status to {}: {}",
+                media_id,
+                status,
+                response.data,
+            )
+        except Exception as e:
+            logger.error(f"Failed to update Seerr media status: {str(e)}")
+
+        return False
 
 
 # Statuses for Media Requests endpoint /api/v1/request:

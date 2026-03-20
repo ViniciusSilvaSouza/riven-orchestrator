@@ -72,6 +72,10 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     )
     requested_by: Mapped[str | None]
     requested_id: Mapped[int | None]
+    requested_seasons: Mapped[list[int] | None] = mapped_column(
+        sqlalchemy.JSON,
+        nullable=True,
+    )
     indexed_at: Mapped[datetime | None]
     scraped_at: Mapped[datetime | None]
     scraped_times: Mapped[int] = mapped_column(sqlalchemy.Integer, default=0)
@@ -164,6 +168,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         self.requested_at = item.get("requested_at", datetime.now())
         self.requested_by = item.get("requested_by")
         self.requested_id = item.get("requested_id")
+        self.requested_seasons = item.get("requested_seasons")
 
         self.indexed_at = None
 

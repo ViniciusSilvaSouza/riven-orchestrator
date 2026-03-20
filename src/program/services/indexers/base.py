@@ -37,6 +37,7 @@ class BaseIndexer(Runner[IndexerModel]):
             "overseerr_id",
             "active_stream",
             "requested_id",
+            "requested_seasons",
             "streams",
         ]
 
