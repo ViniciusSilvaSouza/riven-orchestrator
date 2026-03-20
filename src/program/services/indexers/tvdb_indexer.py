@@ -6,12 +6,14 @@ import regex
 from kink import di
 from loguru import logger
 
-from program.apis.tvdb_api import SeriesRelease, TVDBApi
 from program.apis.trakt_api import TraktAPI
+from program.apis.tvdb_api import SeriesRelease, TVDBApi
+from program.core.runner import MediaItemGenerator, RunnerResult
 from program.media.item import Episode, MediaItem, Season, Show
 from program.services.indexers.base import BaseIndexer
-from program.core.runner import MediaItemGenerator, RunnerResult
-from schemas.tvdb import SeasonExtendedRecord, EpisodeBaseRecord
+from program.settings import settings_manager
+from program.utils.localization import language_tag_to_alpha3
+from schemas.tvdb import EpisodeBaseRecord, SeasonExtendedRecord
 
 
 class TVDBIndexer(BaseIndexer):
@@ -22,6 +24,55 @@ class TVDBIndexer(BaseIndexer):
 
         self.api = di[TVDBApi]
         self.trakt_api = di[TraktAPI]
+
+    @staticmethod
+    def _preferred_translation_language() -> str:
+        return language_tag_to_alpha3(
+            settings_manager.settings.metadata.language,
+            default="eng",
+        )
+
+    @staticmethod
+    def _preferred_alias_bucket() -> str:
+        return settings_manager.settings.metadata.region.lower()
+
+    def _localized_show_title(
+        self,
+        show_data: SeriesRelease,
+        title: str,
+        aliases: dict[str, list[str]],
+    ) -> tuple[str, dict[str, list[str]]]:
+        if not show_data.id:
+            return title, aliases
+
+        preferred_language = self._preferred_translation_language()
+        fallback_to_english = settings_manager.settings.metadata.fallback_to_english
+        translation_order = [preferred_language]
+
+        if fallback_to_english and preferred_language != "eng":
+            translation_order.append("eng")
+
+        for translation_language in translation_order:
+            translation = self.api.get_translation(show_data.id, translation_language)
+
+            if not translation or not translation.name:
+                continue
+
+            title = translation.name
+
+            if translation.aliases:
+                alias_bucket = (
+                    self._preferred_alias_bucket()
+                    if translation_language == preferred_language
+                    else "us"
+                )
+                aliases.setdefault(alias_bucket, []).extend(
+                    [alias for alias in translation.aliases]
+                )
+
+            break
+
+        return title, aliases
 
     def run(
         self,
@@ -158,16 +209,8 @@ class TVDBIndexer(BaseIndexer):
             title = show_data.name or ""
             poster_path = show_data.image
 
-            if show_data.original_language != "eng" and show_data.id:
-                if translation := self.api.get_translation(show_data.id, "eng"):
-                    if translation.name:
-                        title = translation.name
-
-                        if translation.aliases:
-                            additional_aliases = translation.aliases
-                            aliases["us"].extend(
-                                [alias for alias in additional_aliases]
-                            )
+            if show_data.original_language and show_data.id:
+                title, aliases = self._localized_show_title(show_data, title, aliases)
 
             if aliases:
                 aliases = {k: list(set(v)) for k, v in aliases.items()}
@@ -325,17 +368,8 @@ class TVDBIndexer(BaseIndexer):
             title = show_data.name
             poster_path = show_data.image
 
-            if show_data.original_language != "eng" and show_data.id:
-                if translation := self.api.get_translation(show_data.id, "eng"):
-                    if translation and translation.name:
-                        title = translation.name
-
-                        if translation.aliases:
-                            additional_aliases = translation.aliases
-
-                            aliases["us"].extend(
-                                [alias for alias in additional_aliases]
-                            )
+            if show_data.original_language and show_data.id:
+                title, aliases = self._localized_show_title(show_data, title, aliases)
 
             if aliases:
                 # get rid of duplicate values

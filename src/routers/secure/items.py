@@ -1,10 +1,10 @@
 import os
-
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Self
-from fastapi import APIRouter, Body, HTTPException, Path, status, Query
+
+from fastapi import APIRouter, Body, HTTPException, Path, Query, status
 from kink import di
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
@@ -14,11 +14,11 @@ from sqlalchemy.orm import Session, object_session
 from program.db import db_functions
 from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
-from program.media.state import States
-from program.types import Event
-from program.program import Program
 from program.media.models import MediaMetadata
+from program.media.state import States
 from program.orchestrator import debrid_manager
+from program.program import Program
+from program.types import Event
 
 from ..models.shared import IdListPayload, MessageResponse
 
@@ -1431,6 +1431,7 @@ async def reindex_item(
                 mutation_fn=mutation,
                 bubble_parents=True,
             )
+            session.commit()
 
             logger.info(f"Successfully re-indexed {item.log_string}")
 

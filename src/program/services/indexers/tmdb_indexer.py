@@ -7,9 +7,10 @@ from loguru import logger
 
 from program.apis.tmdb_api import TMDBApi
 from program.apis.trakt_api import TraktAPI
+from program.core.runner import MediaItemGenerator, RunnerResult
 from program.media.item import MediaItem, Movie
 from program.services.indexers.base import BaseIndexer
-from program.core.runner import MediaItemGenerator, RunnerResult
+from program.settings import settings_manager
 
 
 class TMDBIndexer(BaseIndexer):
@@ -20,6 +21,11 @@ class TMDBIndexer(BaseIndexer):
 
         self.api = di[TMDBApi]
         self.trakt_api = di[TraktAPI]
+
+    @staticmethod
+    def _metadata_locale() -> tuple[str, str]:
+        metadata = settings_manager.settings.metadata
+        return metadata.language, metadata.region
 
     def run(
         self,
@@ -103,10 +109,11 @@ class TMDBIndexer(BaseIndexer):
                 logger.error(f"Movie {movie.log_string} has no TMDB ID resolved")
                 return False
 
-            movie_details = (
-                self.api.get_movie_details_with_external_ids_and_release_dates(
-                    movie_id=str(tmdb_id),
-                )
+            language, region = self._metadata_locale()
+            movie_details = self.api.get_movie_details_with_external_ids_and_release_dates(
+                movie_id=str(tmdb_id),
+                language=language,
+                region=region,
             )
 
             # Parse release date
@@ -165,10 +172,11 @@ class TMDBIndexer(BaseIndexer):
                 else None
             )
 
-            assert movie_details.title
+            localized_title = movie_details.title or movie_details.original_title
+            assert localized_title
 
             # Update the Movie object's attributes
-            movie.title = movie_details.title
+            movie.title = localized_title
             movie.poster_path = full_poster_url
             movie.year = (
                 int(movie_details.release_date[:4])
@@ -229,8 +237,11 @@ class TMDBIndexer(BaseIndexer):
                 logger.error("No TMDB ID resolved for movie")
                 return None
 
-            movie_details = (
-                self.api.get_movie_details_with_external_ids_and_release_dates(tmdb_id)
+            language, region = self._metadata_locale()
+            movie_details = self.api.get_movie_details_with_external_ids_and_release_dates(
+                tmdb_id,
+                language=language,
+                region=region,
             )
         except Exception as e:
             logger.error(f"Error fetching movie details: {e}")
@@ -298,7 +309,7 @@ class TMDBIndexer(BaseIndexer):
 
             return Movie(
                 {
-                    "title": movie_details.title,
+                    "title": movie_details.title or movie_details.original_title,
                     "poster_path": full_poster_url,
                     "year": (
                         int(movie_details.release_date[:4])

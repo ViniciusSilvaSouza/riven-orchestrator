@@ -5,14 +5,15 @@ OpenSubtitles provider for Riven.
 import base64
 import time
 import zlib
-
 from collections.abc import Iterable
 from http import HTTPStatus
-from xmlrpc.client import ServerProxy
 from typing import Any, Generic, Self, TypeVar, cast
-from babelfish import Language, Error as BabelfishError
+from xmlrpc.client import ServerProxy
+
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from program.utils.localization import language_tag_to_alpha3
 
 from .base import SubtitleItem, SubtitleProvider
 
@@ -88,60 +89,7 @@ def normalize_language_to_alpha3(language: str) -> str:
         ISO 639-3 language code (e.g., 'eng', 'spa', 'fra')
     """
 
-    try:
-        language_str = str(language).strip().lower()
-
-        if not language_str:
-            logger.warning("Empty language code provided, defaulting to 'eng'")
-            return "eng"
-
-        # Try different parsing strategies
-        lang_obj = None
-
-        # Strategy 1: Try as ISO 639-3 (3-letter terminological code)
-        if len(language_str) == 3:
-            try:
-                lang_obj = Language(language_str)
-            except (BabelfishError, ValueError):
-                # Strategy 2: Try as ISO 639-2/B (bibliographic code)
-                try:
-                    lang_obj = Language.fromcode(language_str, "alpha3b")
-                except (BabelfishError, ValueError, KeyError):
-                    pass
-
-        # Strategy 3: Try as ISO 639-1 (2-letter code)
-        if lang_obj is None and len(language_str) == 2:
-            try:
-                lang_obj = Language.fromcode(language_str, "alpha2")
-            except (BabelfishError, ValueError, KeyError):
-                pass
-
-        # Strategy 4: Try parsing as locale string (e.g., 'en-US', 'pt_BR')
-        if lang_obj is None and ("-" in language_str or "_" in language_str):
-            try:
-                # Extract just the language part before the separator
-                lang_part = language_str.split("-")[0].split("_")[0]
-
-                if len(lang_part) == 2:
-                    lang_obj = Language.fromcode(lang_part, "alpha2")
-                elif len(lang_part) == 3:
-                    lang_obj = Language(lang_part)
-            except (BabelfishError, ValueError, KeyError):
-                pass
-
-        if lang_obj:
-            return cast(str, lang_obj.alpha3)
-
-        # Fallback to English
-        logger.warning(f"Could not parse language '{language}', defaulting to 'eng'")
-
-        return "eng"
-
-    except Exception as e:
-        logger.error(
-            f"Error normalizing language '{language}': {e}, defaulting to 'eng'"
-        )
-        return "eng"
+    return cast(str, language_tag_to_alpha3(language, default="eng"))
 
 
 class OpenSubtitlesProvider(SubtitleProvider):

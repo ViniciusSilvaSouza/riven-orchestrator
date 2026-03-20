@@ -110,25 +110,39 @@ class SettingsManager:
 
         return checked_settings
 
+    def _validate_settings(self, settings_dict: dict[str, Any]) -> AppModel:
+        return AppModel.model_validate(settings_dict)
+
+    def _effective_settings(self, settings_dict: dict[str, Any]) -> tuple[AppModel, AppModel]:
+        base_settings = self._validate_settings(settings_dict)
+        effective_settings = self._validate_settings(
+            self.check_environment(base_settings.model_dump(), "RIVEN")
+        )
+        return base_settings, effective_settings
+
+    def _save_model(self, settings: AppModel):
+        with open(self.settings_file, "w", encoding="utf-8") as file:
+            file.write(settings.model_dump_json(indent=4, exclude_none=True))
+
     def load(self, settings_dict: dict[str, Any] | None = None):
         """Load settings from file, validating against the AppModel schema."""
 
         try:
+            settings_loaded_from_file = settings_dict is None
             if not settings_dict:
                 with open(self.settings_file, "r", encoding="utf-8") as file:
                     settings_dict = json.loads(file.read())
 
-                    if (
-                        settings_dict
-                        and os.environ.get("RIVEN_FORCE_ENV", "false").lower() == "true"
-                    ):
-                        settings_dict = self.check_environment(
-                            settings_dict,
-                            "RIVEN",
-                        )
+            base_settings, effective_settings = self._effective_settings(settings_dict)
+            self.settings = effective_settings
 
-            self.settings = AppModel.model_validate(settings_dict)
-            self.save()
+            if settings_loaded_from_file:
+                model_to_persist = (
+                    effective_settings
+                    if os.environ.get("RIVEN_FORCE_ENV", "false").lower() == "true"
+                    else base_settings
+                )
+                self._save_model(model_to_persist)
         except ValidationError as e:
             formatted_error = format_validation_error(e)
             logger.error(f"Settings validation failed:\n{formatted_error}")
@@ -145,8 +159,7 @@ class SettingsManager:
 
     def save(self):
         """Save settings to file, using Pydantic model for JSON serialization."""
-        with open(self.settings_file, "w", encoding="utf-8") as file:
-            file.write(self.settings.model_dump_json(indent=4, exclude_none=True))
+        self._save_model(self.settings)
 
     @contextmanager
     def override(self, **overrides: Any) -> Generator[None, None, None]:

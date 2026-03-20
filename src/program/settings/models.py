@@ -2,20 +2,22 @@
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, Annotated
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
+    ConfigDict,
     Field,
     field_validator,
     model_validator,
-    BeforeValidator,
 )
 from pydantic.networks import PostgresDsn
 from RTN.models import SettingsModel
 
 from program.settings.migratable import MigratableBaseModel
 from program.utils import generate_api_key, get_version
+from program.utils.localization import normalize_language_tag, normalize_region_code
 
 deprecation_warning = (
     "This has been deprecated and will be removed in a future version."
@@ -965,6 +967,31 @@ class NotificationsModel(Observable):
     )
 
 
+class MetadataLocalizationModel(Observable):
+    model_config = ConfigDict(title="Metadata Localization")
+
+    language: str = Field(
+        default="en-US",
+        description="Preferred metadata language used for titles, summaries, and TMDB lookups",
+    )
+    region: str = Field(
+        default="US",
+        description="Preferred metadata region used for regionalized content metadata",
+    )
+    fallback_to_english: bool = Field(
+        default=True,
+        description="Fallback to English metadata when the preferred language is unavailable",
+    )
+
+    @field_validator("language", mode="before")
+    def normalize_language(cls, value: str | None) -> str:
+        return normalize_language_tag(value, "en-US")
+
+    @field_validator("region", mode="before")
+    def normalize_region(cls, value: str | None) -> str:
+        return normalize_region_code(value, "US")
+
+
 class SubtitleProviderConfig(Observable):
     enabled: bool = Field(default=False, description="Enable this subtitle provider")
 
@@ -1058,6 +1085,10 @@ class AppModel(Observable):
         default=60 * 60 * 24,
         ge=0,
         description="Interval in seconds to retry failed library items (24 hours default, 0 to disable)",
+    )
+    metadata: MetadataLocalizationModel = Field(
+        default_factory=lambda: MetadataLocalizationModel(),
+        description="Metadata localization preferences",
     )
     tracemalloc: bool = Field(
         default=False, description="Enable Python memory tracking (debug)"

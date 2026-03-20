@@ -27,9 +27,11 @@ If you want the most faithful FUSE test, run this same stack from a Linux machin
 1. Edit the root `.env`.
 2. Copy the values from `.env.local.example` that you want to enable.
 3. Paste your Real-Debrid API key in `RIVEN_DOWNLOADERS_REAL_DEBRID_API_KEY`.
-4. Start the stack.
-5. Open the Riven Frontend and finish the configuration through the UI.
-6. Open Seerr, Jellyfin, and Prowlarr to review or refine the generated local setup.
+4. If you want localized metadata in Riven, set `RIVEN_METADATA_LANGUAGE` and `RIVEN_METADATA_REGION` in the root `.env`.
+5. If you want only Portuguese subtitles via post-processing, enable `RIVEN_POST_PROCESSING_SUBTITLE_*` in the root `.env`.
+6. Start the stack.
+7. Open the Riven Frontend and finish the configuration through the UI.
+8. Open Seerr, Jellyfin, and Prowlarr to review or refine the generated local setup.
 
 The dev compose enables Zilean and Comet scraping by default, and Comet is already wired to Prowlarr plus anime-oriented scrapers such as Nyaa, AnimeTosho, SeaDex, and NekoBT. The backend API key used by the frontend is pinned in the compose for local testing.
 

@@ -53,7 +53,7 @@ services:
 
   riven_frontend:
     build:
-      context: ../../../riven-frontend
+      context: ../../../../riven-frontend
       dockerfile: Dockerfile
     image: riven-frontend:dev-local
     container_name: riven-frontend

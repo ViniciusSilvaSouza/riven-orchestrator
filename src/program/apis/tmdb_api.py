@@ -46,11 +46,27 @@ class TMDBApi:
 
         return FindById200Response.from_dict(response.json())
 
-    def get_movie_details_with_external_ids_and_release_dates(self, movie_id: str):
+    def get_movie_details_with_external_ids_and_release_dates(
+        self,
+        movie_id: str,
+        language: str | None = None,
+        region: str | None = None,
+    ):
         """Get movie details with external IDs and release dates appended"""
 
+        params: dict[str, str] = {
+            "append_to_response": "external_ids,release_dates",
+        }
+
+        if language:
+            params["language"] = language
+
+        if region:
+            params["region"] = region
+
         response = self.session.get(
-            f"movie/{movie_id}?append_to_response=external_ids,release_dates"
+            f"movie/{movie_id}",
+            params=params,
         )
 
         from schemas.tmdb import (
