@@ -847,6 +847,20 @@ class ProwlarrConfig(Observable):
     limiter_seconds: int = Field(
         default=60, ge=1, description="Rate limiter cooldown in seconds"
     )
+    use_aliases: bool = Field(
+        default=True,
+        description="Try alternate aliases when the primary Prowlarr query has no results",
+    )
+    max_query_variants: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum number of Prowlarr title variants to try per indexer",
+    )
+    preferred_alias_countries: list[str] = Field(
+        default_factory=lambda: ["us", "jp", "br", "pt"],
+        description="Preferred alias country codes to prioritize for Prowlarr queries",
+    )
 
 
 class RarbgConfig(Observable):

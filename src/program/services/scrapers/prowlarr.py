@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
@@ -11,17 +12,16 @@ from requests import ReadTimeout, RequestException
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.services.scrapers.base import ScraperService
 from program.settings import settings_manager
+from program.settings.models import ProwlarrConfig
 from program.utils.request import SmartSession
 from program.utils.torrent import extract_infohash, normalize_infohash
-from program.settings.models import ProwlarrConfig
-
 from schemas.prowlarr import (
     IndexerResource,
     IndexerStatusResource,
-    SearchParam,
-    TvSearchParam,
     MovieSearchParam,
     ReleaseResource,
+    SearchParam,
+    TvSearchParam,
 )
 
 
@@ -56,6 +56,7 @@ class Indexer(BaseModel):
     name: str | None
     enable: bool
     protocol: str
+    language: str | None = None
     capabilities: Capabilities
 
 
@@ -272,6 +273,7 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                     name=name,
                     enable=enable,
                     protocol=protocol,
+                    language=indexer_data.language,
                     capabilities=capabilities,
                 )
             )
@@ -337,9 +339,7 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
                 for indexer in self.indexers
             }
 
-            for future in future_to_indexer:
-                indexer = future_to_indexer[future]
-
+            for future, indexer in future_to_indexer.items():
                 try:
                     result = future.result(timeout=self.timeout)
 
@@ -361,79 +361,224 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
 
         return torrents
 
-    def build_search_params(self, indexer: Indexer, item: MediaItem) -> Params:
-        """Build a search query for a single indexer."""
+    @staticmethod
+    def _normalize_query(query: str | None) -> str | None:
+        """Normalize a title query to keep candidate matching stable."""
 
-        search_query = None
-        search_type = None
-        season = None
-        episode = None
+        if not query:
+            return None
 
-        item_title = item.top_title
+        normalized = " ".join(query.split()).strip()
+        return normalized or None
 
-        search_params = indexer.capabilities.search_params
+    def _iter_alias_titles(
+        self, aliases: dict[str, list[str]] | None, country_codes: Iterable[str]
+    ) -> list[str]:
+        """Return alias titles in the order of the provided country codes."""
 
-        def set_query_and_type(_query: str, _type: str):
-            nonlocal search_query, search_type
+        if not aliases:
+            return []
 
-            search_query = _query
-            search_type = _type
+        ordered_aliases = list[str]()
+        seen = set[str]()
+
+        for code in country_codes:
+            for title in aliases.get(code, []):
+                normalized = self._normalize_query(title)
+
+                if normalized and normalized.casefold() not in seen:
+                    ordered_aliases.append(normalized)
+                    seen.add(normalized.casefold())
+
+        return ordered_aliases
+
+    def _preferred_country_codes(self, item: MediaItem, indexer: Indexer) -> list[str]:
+        """Return the preferred alias country codes for a Prowlarr query."""
+
+        preferred_countries = list[str]()
+        indexer_language = (indexer.language or "").lower()
+
+        preferred_countries.extend(
+            self._language_country_preferences(indexer_language)
+        )
+
+        if item.is_anime:
+            preferred_countries.extend(["us", "jp"])
+        elif item.language == "pt":
+            preferred_countries.extend(["us", "br", "pt"])
+        elif item.language == "en":
+            preferred_countries.extend(["us", "uk", "gb"])
+
+        preferred_countries.extend(
+            country.lower() for country in self.settings.preferred_alias_countries
+        )
+
+        deduped_countries = list[str]()
+        seen_countries = set[str]()
+
+        for country in preferred_countries:
+            if country and country not in seen_countries:
+                deduped_countries.append(country)
+                seen_countries.add(country)
+
+        return deduped_countries
+
+    @staticmethod
+    def _language_country_preferences(indexer_language: str) -> list[str]:
+        """Map a Prowlarr indexer language into country-code preferences."""
+
+        language_country_map = {
+            "en": ["us", "uk", "gb"],
+            "ja": ["jp"],
+            "zh-cn": ["cn"],
+            "zh-tw": ["tw"],
+            "pt-br": ["br", "pt"],
+            "pt": ["pt", "br"],
+        }
+
+        for language_prefix, countries in language_country_map.items():
+            if indexer_language.startswith(language_prefix):
+                return countries.copy()
+
+        return []
+
+    def _dedupe_queries(self, candidates: Iterable[str]) -> list[str]:
+        """Remove duplicate query candidates while preserving order."""
+
+        deduped_candidates = list[str]()
+        seen_queries = set[str]()
+
+        for candidate in candidates:
+            normalized = self._normalize_query(candidate)
+
+            if normalized and normalized.casefold() not in seen_queries:
+                deduped_candidates.append(normalized)
+                seen_queries.add(normalized.casefold())
+
+        return deduped_candidates
+
+    def _build_query_candidates(self, indexer: Indexer, item: MediaItem) -> list[str]:
+        """Build prioritized title candidates for a single Prowlarr query."""
+
+        primary_title = self._normalize_query(item.top_title)
+
+        if not primary_title:
+            return []
+
+        if not self.settings.use_aliases:
+            return [primary_title]
+
+        aliases = item.get_aliases() or {}
+        preferred_country_codes = self._preferred_country_codes(item, indexer)
+        preferred_aliases = self._iter_alias_titles(aliases, preferred_country_codes)
+        remaining_aliases = self._iter_alias_titles(
+            aliases,
+            [country for country in aliases if country not in preferred_country_codes],
+        )
+
+        candidates = list[str]()
+
+        if item.is_anime or item.language == "pt" or (item.country or "").upper() == "BR":
+            candidates.extend(preferred_aliases)
+            candidates.append(primary_title)
+        else:
+            candidates.append(primary_title)
+            candidates.extend(preferred_aliases)
+
+        candidates.extend(remaining_aliases)
+
+        return self._dedupe_queries(candidates)[: self.settings.max_query_variants]
+
+    @staticmethod
+    def _season_release_query(item_title: str, season_number: int) -> str:
+        """Build a stable season query for search-only indexers."""
+
+        return f"{item_title} S{season_number:02}"
+
+    @classmethod
+    def _episode_release_query(cls, item_title: str, item: Episode) -> str:
+        """Build a stable episode query for search-only indexers."""
+
+        return (
+            f"{cls._season_release_query(item_title, item.parent.number)}"
+            f"E{item.number:02}"
+        )
+
+    @staticmethod
+    def _build_movie_or_show_search(
+        search_params: SearchParams,
+        item: Movie | Show,
+        item_title: str,
+        indexer_name: str | None,
+    ) -> tuple[str, str, int | None, int | None]:
+        """Build search params for movie and show items."""
 
         if isinstance(item, Movie):
-            if "imdbId" in search_params.movie and item.imdb_id:
-                set_query_and_type(item.imdb_id, "movie-search")
-            elif "q" in search_params.movie:
-                set_query_and_type(item_title, "movie-search")
-            elif "q" in search_params.search:
-                set_query_and_type(item_title, "search")
-            else:
-                raise ValueError(
-                    f"Indexer {indexer.name} does not support movie search"
-                )
+            media_params = search_params.movie
+            media_type = "movie"
+        else:
+            media_params = search_params.tv
+            media_type = "show"
 
-        elif isinstance(item, Show):
-            if "imdbId" in search_params.tv and item.imdb_id:
-                set_query_and_type(item.imdb_id, "tv-search")
-            elif "q" in search_params.tv:
-                set_query_and_type(item_title, "tv-search")
-            elif "q" in search_params.search:
-                set_query_and_type(item_title, "search")
-            else:
-                raise ValueError(f"Indexer {indexer.name} does not support show search")
+        if "imdbId" in media_params and item.imdb_id:
+            search_query = item.imdb_id
+        elif "q" in media_params:
+            search_query = item_title
+        elif "q" in search_params.search:
+            return item_title, "search", None, None
+        else:
+            raise ValueError(
+                f"Indexer {indexer_name} does not support {media_type} search"
+            )
 
-        elif isinstance(item, Season):
-            if "q" in search_params.tv:
-                set_query_and_type(f"{item_title} S{item.number}", "tv-search")
+        return search_query, f"{media_type}-search", None, None
 
-                if "season" in search_params.tv:
-                    season = item.number
-            elif "q" in search_params.search:
-                query = f"{item_title} S{item.number}"
+    @classmethod
+    def _build_season_search(
+        cls, search_params: SearchParams, item: Season, item_title: str, indexer_name: str | None
+    ) -> tuple[str, str, int | None, int | None]:
+        """Build search params for season items."""
 
-                set_query_and_type(query, "search")
-            else:
-                raise ValueError(
-                    f"Indexer {indexer.name} does not support season search"
-                )
+        season_query = cls._season_release_query(item_title, item.number)
 
-        elif isinstance(item, Episode):
-            if "q" in search_params.tv:
-                if "ep" in search_params.tv:
-                    query = f"{item_title}"
-                    season = item.parent.number
-                    episode = item.number
-                else:
-                    query = f"{item.log_string}"
+        if "q" in search_params.tv:
+            season = item.number if "season" in search_params.tv else None
+            return season_query, "tv-search", season, None
 
-                set_query_and_type(query, "tv-search")
-            elif "q" in search_params.search:
-                query = f"{item.log_string}"
+        if "q" in search_params.search:
+            return season_query, "search", None, None
 
-                set_query_and_type(query, "search")
-            else:
-                raise ValueError(
-                    f"Indexer {indexer.name} does not support episode search"
-                )
+        raise ValueError(f"Indexer {indexer_name} does not support season search")
+
+    @classmethod
+    def _build_episode_search(
+        cls,
+        search_params: SearchParams,
+        item: Episode,
+        item_title: str,
+        indexer_name: str | None,
+    ) -> tuple[str, str, int | None, int | None]:
+        """Build search params for episode items."""
+
+        if "q" in search_params.tv:
+            if "ep" in search_params.tv:
+                return item_title, "tv-search", item.parent.number, item.number
+
+            return (
+                cls._episode_release_query(item_title, item),
+                "tv-search",
+                None,
+                None,
+            )
+
+        if "q" in search_params.search:
+            return cls._episode_release_query(item_title, item), "search", None, None
+
+        raise ValueError(f"Indexer {indexer_name} does not support episode search")
+
+    @staticmethod
+    def _get_item_categories(indexer: Indexer, item: MediaItem) -> list[int]:
+        """Resolve matching indexer categories for a media item."""
 
         categories = {
             cat_id
@@ -443,37 +588,64 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
             for cat_id in category.ids
         }
 
-        indexer_ids = indexer.id
-        limit = 1000
+        return list(categories)
+
+    def build_search_params(
+        self, indexer: Indexer, item: MediaItem, title_override: str | None = None
+    ) -> Params:
+        """Build a search query for a single indexer."""
+
+        item_title = self._normalize_query(title_override or item.top_title) or item.top_title
+
+        search_params = indexer.capabilities.search_params
+
+        if isinstance(item, Movie | Show):
+            search_query, search_type, season, episode = (
+                self._build_movie_or_show_search(
+                    search_params, item, item_title, indexer.name
+                )
+            )
+        elif isinstance(item, Season):
+            search_query, search_type, season, episode = self._build_season_search(
+                search_params, item, item_title, indexer.name
+            )
+        else:
+            search_query, search_type, season, episode = self._build_episode_search(
+                search_params,
+                item,
+                item_title,
+                indexer.name,
+            )
 
         return Params(
             season=season,
             ep=episode,
             query=search_query,
             type=search_type,
-            categories=list(categories),
-            indexer_ids=indexer_ids,
-            limit=limit,
+            categories=self._get_item_categories(indexer, item),
+            indexer_ids=indexer.id,
+            limit=1000,
         )
 
-    def scrape_indexer(self, indexer: Indexer, item: MediaItem) -> dict[str, str]:
-        """Scrape from a single indexer"""
+    @staticmethod
+    def _is_anime_only_indexer(indexer: Indexer) -> bool:
+        """Return whether the current indexer is explicitly anime-oriented."""
 
-        if (
+        return bool(
             indexer.name in ANIME_ONLY_INDEXERS
             or "anime" in (indexer.name or "").lower()
-        ):
-            if not item.is_anime:
-                logger.debug(f"Indexer {indexer.name} is anime only, skipping")
-                return {}
+        )
+
+    def _request_search(
+        self, indexer: Indexer, item: MediaItem, query: str
+    ) -> list[ReleaseResource]:
+        """Execute a single Prowlarr search query and validate the response."""
 
         try:
-            params = self.build_search_params(indexer, item)
+            params = self.build_search_params(indexer, item, title_override=query)
         except ValueError as e:
             logger.error(f"Failed to build search params for {indexer.name}: {e}")
-            return {}
-
-        start_time = time.time()
+            return []
 
         assert self.session
 
@@ -484,91 +656,128 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
             headers=self.headers,
         )
 
-        if not response.ok:
-            data = ScrapeErrorResponse.model_validate(response.json())
+        if response.ok:
+            return ScrapeResponse.model_validate({"items": response.json()}).items
 
-            message = data.message or "Unknown error"
+        data = ScrapeErrorResponse.model_validate(response.json())
+        message = data.message or "Unknown error"
 
-            logger.debug(
-                f"Failed to scrape {indexer.name}: [{response.status_code}] {message}"
-            )
+        logger.debug(
+            f"Failed to scrape {indexer.name}: [{response.status_code}] {message}"
+        )
 
-            self.indexers.remove(indexer)
+        self.indexers.remove(indexer)
 
-            logger.debug(
-                f"Removed indexer {indexer.name} from the list of usable indexers"
-            )
+        logger.debug(
+            f"Removed indexer {indexer.name} from the list of usable indexers"
+        )
+        return []
 
-            return {}
+    @staticmethod
+    def _extract_available_streams(
+        data: list[ReleaseResource],
+    ) -> tuple[dict[str, str], list[tuple[ReleaseResource, str]]]:
+        """Extract immediately available hashes and collect releases that need URL fetches."""
 
-        data = ScrapeResponse.model_validate({"items": response.json()}).items
         streams = dict[str, str]()
-
-        # List of (torrent, title) tuples that need URL fetching
         urls_to_fetch = list[tuple[ReleaseResource, str]]()
 
-        # First pass: extract infohashes from available fields and collect URLs that need fetching
         for torrent in data:
             title = torrent.title
             infohash = None
 
-            # Priority 1: Use infoHash field directly if available (normalize to handle base32)
             if torrent.info_hash:
                 infohash = normalize_infohash(torrent.info_hash)
 
-            # Priority 2: Try to extract from guid (handles magnets and bare hashes)
             if not infohash and torrent.guid:
                 infohash = extract_infohash(torrent.guid)
 
-            # Priority 3: Collect URLs that need fetching
             if not infohash and torrent.download_url and title:
                 urls_to_fetch.append((torrent, title))
             elif infohash and title:
-                # We already have an infohash, add it directly
                 streams[infohash] = title
 
-        # Fetch URLs in parallel
-        if urls_to_fetch:
-            with concurrent.futures.ThreadPoolExecutor(
-                thread_name_prefix="ProwlarrHashExtract", max_workers=10
-            ) as executor:
-                future_to_torrent = {
-                    executor.submit(self.get_infohash_from_url, torrent.download_url): (
-                        torrent,
-                        title,
-                    )
-                    for torrent, title in urls_to_fetch
-                    if torrent.download_url
-                }
+        return streams, urls_to_fetch
 
-                done, pending = concurrent.futures.wait(
-                    future_to_torrent.keys(),
-                    timeout=self.settings.infohash_fetch_timeout,
+    def _fetch_streams_from_urls(
+        self, urls_to_fetch: list[tuple[ReleaseResource, str]]
+    ) -> dict[str, str]:
+        """Resolve infohashes from release download URLs."""
+
+        streams = dict[str, str]()
+
+        if not urls_to_fetch:
+            return streams
+
+        with concurrent.futures.ThreadPoolExecutor(
+            thread_name_prefix="ProwlarrHashExtract", max_workers=10
+        ) as executor:
+            future_to_torrent = {
+                executor.submit(self.get_infohash_from_url, torrent.download_url): (
+                    torrent,
+                    title,
                 )
+                for torrent, title in urls_to_fetch
+                if torrent.download_url
+            }
 
-                # Process completed futures
-                for future in done:
-                    torrent, title = future_to_torrent[future]
+            done, pending = concurrent.futures.wait(
+                future_to_torrent.keys(),
+                timeout=self.settings.infohash_fetch_timeout,
+            )
 
-                    try:
-                        infohash = future.result()
-                        if infohash:
-                            streams[infohash] = title
-                    except Exception as e:
-                        logger.debug(
-                            f"Failed to get infohash from downloadUrl for {title}: {e}"
-                        )
+            for future in done:
+                _, title = future_to_torrent[future]
 
-                # Cancel and log timeouts for pending futures
-                for future in pending:
-                    torrent, title = future_to_torrent[future]
-                    future.cancel()
+                try:
+                    infohash = future.result()
+                    if infohash:
+                        streams[infohash] = title
+                except Exception as e:
                     logger.debug(
-                        f"Timeout getting infohash from downloadUrl for {title}"
+                        f"Failed to get infohash from downloadUrl for {title}: {e}"
                     )
 
-        logger.debug(
-            f"Indexer {indexer.name} found {len(streams)} streams for {item.log_string} in {time.time() - start_time:.2f} seconds"
-        )
+            for future in pending:
+                _, title = future_to_torrent[future]
+                future.cancel()
+                logger.debug(f"Timeout getting infohash from downloadUrl for {title}")
 
         return streams
+
+    def scrape_indexer(self, indexer: Indexer, item: MediaItem) -> dict[str, str]:
+        """Scrape from a single indexer"""
+
+        if self._is_anime_only_indexer(indexer) and not item.is_anime:
+            logger.debug(f"Indexer {indexer.name} is anime only, skipping")
+            return {}
+
+        query_candidates = self._build_query_candidates(indexer, item)
+        seen_param_signatures = set[str]()
+
+        for query in query_candidates:
+            params = self.build_search_params(indexer, item, title_override=query)
+
+            params_signature = repr(params.model_dump())
+
+            if params_signature in seen_param_signatures:
+                continue
+
+            seen_param_signatures.add(params_signature)
+            start_time = time.time()
+            data = self._request_search(indexer, item, query)
+            streams, urls_to_fetch = self._extract_available_streams(data)
+            streams.update(self._fetch_streams_from_urls(urls_to_fetch))
+
+            if streams:
+                if query != item.top_title:
+                    logger.debug(
+                        f"Prowlarr matched {item.log_string} using query variant '{query}' on {indexer.name}"
+                    )
+
+                logger.debug(
+                    f"Indexer {indexer.name} found {len(streams)} streams for {item.log_string} in {time.time() - start_time:.2f} seconds"
+                )
+                return streams
+
+        return {}
