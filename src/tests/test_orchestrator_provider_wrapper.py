@@ -25,6 +25,30 @@ def test_check_cache_returns_not_cached_when_provider_has_no_container():
     assert result.container is None
 
 
+def test_check_cache_returns_acquiring_when_provider_keeps_pending_torrent():
+    downloader = Mock()
+    pending_container = Mock(files=[], torrent_id="rd-123", torrent_info=Mock(status="queued"))
+    downloader.validate_stream_on_service.return_value = pending_container
+
+    wrapper = ProviderResolveWrapper(downloader)
+    provider = Mock(key="realdebrid")
+    item = Mock(id=10, log_string="Episode A")
+    stream = Mock(infohash="hash-pending")
+
+    result = wrapper.check_cache(
+        provider,
+        "hash-pending",
+        item=item,
+        stream=stream,
+        allow_pending=True,
+    )
+
+    assert result.status == ProviderResolveStatus.ACQUIRING
+    assert result.is_cached is False
+    assert result.is_acquiring is True
+    assert result.container is pending_container
+
+
 def test_resolve_returns_resolved_when_provider_succeeds():
     downloader = Mock()
     container = Mock()

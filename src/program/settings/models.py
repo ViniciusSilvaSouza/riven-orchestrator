@@ -104,6 +104,20 @@ class DebridOrchestratorModel(Observable):
         ge=1,
         description="How long to remember negative debrid cache lookups",
     )
+    uncached_acquire_fallback: bool = Field(
+        default=True,
+        description="Keep provider-side torrent jobs for uncached streams and poll until they become available",
+    )
+    uncached_acquire_poll_seconds: int = Field(
+        default=60,
+        ge=5,
+        description="Polling interval in seconds for provider-side uncached torrent acquisition",
+    )
+    uncached_acquire_max_wait_minutes: int = Field(
+        default=180,
+        ge=1,
+        description="Maximum time in minutes to wait for a provider-side uncached torrent to finish",
+    )
     provider_priority: list[
         Literal["realdebrid", "debridlink", "alldebrid"]
     ] = Field(

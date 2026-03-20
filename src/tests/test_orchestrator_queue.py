@@ -9,10 +9,15 @@ from unittest.mock import Mock
 
 from program.orchestrator.debrid_manager import DebridManager
 from program.orchestrator.models import (
+    DebridCacheStatus,
     DebridResolutionTask,
     DebridTaskPriority,
     DebridTaskStatus,
     DebridTaskTrigger,
+)
+from program.orchestrator.provider_wrapper import (
+    ProviderCacheResult,
+    ProviderResolveStatus,
 )
 
 _STATES_SPEC = importlib.util.spec_from_file_location(
@@ -219,6 +224,47 @@ def test_requeue_without_consuming_attempt_restores_attempt_budget(monkeypatch):
     assert task.last_error == "No providers available for task"
 
 
+def test_park_acquiring_task_persists_provider_torrent_state(monkeypatch):
+    manager = DebridManager()
+    task = Mock(
+        attempts=1,
+        max_attempts=3,
+        status=DebridTaskStatus.PROCESSING,
+        provider=None,
+        provider_torrent_id=None,
+        provider_torrent_status=None,
+        available_at=None,
+        locked_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        last_error=None,
+    )
+    session = FakeTaskSession(task)
+    debrid_manager_module = importlib.import_module("program.orchestrator.debrid_manager")
+
+    @contextmanager
+    def session_factory():
+        yield session
+
+    monkeypatch.setattr(debrid_manager_module, "db_session", session_factory)
+
+    manager._park_acquiring_task(
+        42,
+        provider="realdebrid",
+        torrent_id="rd-123",
+        provider_status="queued",
+        delay=timedelta(minutes=1),
+        error="Waiting for provider acquisition on realdebrid (status=queued)",
+    )
+
+    assert session.committed is True
+    assert task.status == DebridTaskStatus.PENDING
+    assert task.attempts == 0
+    assert task.provider == "realdebrid"
+    assert task.provider_torrent_id == "rd-123"
+    assert task.provider_torrent_status == "queued"
+    assert task.locked_at is None
+
+
 def test_recover_stranded_scraped_items_requeues_terminal_items(monkeypatch):
     manager = DebridManager()
     manager._stranded_recovery_delay = timedelta(minutes=5)
@@ -290,3 +336,52 @@ def test_recover_stranded_scraped_items_requeues_terminal_items(monkeypatch):
             },
         )
     ]
+
+
+def test_probe_provider_caches_parallel_returns_acquiring_without_negative_cache(monkeypatch):
+    manager = DebridManager()
+    service_a = Mock(key="realdebrid")
+    service_b = Mock(key="alldebrid")
+    saved = []
+
+    class FakeWrapper:
+        def check_cache(self, service, infohash, *, item, stream, allow_pending=False):
+            _ = item, stream
+            assert allow_pending is True
+            if service.key == "realdebrid":
+                return ProviderCacheResult(
+                    infohash=infohash,
+                    provider=service.key,
+                    status=ProviderResolveStatus.ACQUIRING,
+                    container=Mock(
+                        files=[],
+                        torrent_id="rd-123",
+                        torrent_info=Mock(status="queued"),
+                    ),
+                )
+            return ProviderCacheResult(
+                infohash=infohash,
+                provider=service.key,
+                status=ProviderResolveStatus.NOT_CACHED,
+                container=None,
+            )
+
+    monkeypatch.setattr(
+        manager,
+        "save_resolution",
+        lambda _infohash, provider, status: saved.append((provider, status)),
+    )
+
+    provider, cache_result, error = manager._probe_provider_caches_parallel(
+        FakeWrapper(),
+        [service_a, service_b],
+        "abc123",
+        Mock(id=1, type="episode", log_string="Episode"),
+        Mock(infohash="abc123"),
+    )
+
+    assert provider is not None
+    assert provider.key == "realdebrid"
+    assert cache_result is not None
+    assert cache_result.is_acquiring is True
+    assert saved == [("alldebrid", DebridCacheStatus.NOT_FOUND)]

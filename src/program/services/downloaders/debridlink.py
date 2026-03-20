@@ -233,6 +233,7 @@ class DebridLinkDownloader(DownloaderBase):
         self,
         infohash: str,
         item_type: ProcessedItemType,
+        retain_pending: bool = False,
         **kwargs: Any,
     ) -> TorrentContainer | None:
         """
@@ -248,13 +249,26 @@ class DebridLinkDownloader(DownloaderBase):
 
         try:
             torrent_id = self.add_torrent(infohash)
-            container, reason, info = self._process_torrent(
+            container, reason, info = self.probe_torrent(
                 torrent_id,
                 infohash,
                 item_type,
             )
 
             if container is None and reason:
+                if (
+                    retain_pending
+                    and info is not None
+                    and reason.startswith("Not instantly available")
+                ):
+                    pending_container = TorrentContainer(
+                        infohash=infohash,
+                        files=[],
+                        torrent_id=torrent_id,
+                        torrent_info=info,
+                    )
+                    return pending_container
+
                 logger.debug(f"Availability check failed [{infohash}]: {reason}")
 
                 # Failed validation - delete the torrent
@@ -318,6 +332,19 @@ class DebridLinkDownloader(DownloaderBase):
 
             return None
 
+    def probe_torrent(
+        self,
+        torrent_id: int | str,
+        infohash: str,
+        item_type: ProcessedItemType,
+        **kwargs: Any,
+    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+        return self._process_torrent(
+            str(torrent_id),
+            infohash,
+            item_type,
+        )
+
     def _process_torrent(
         self,
         torrent_id: str,
@@ -375,7 +402,7 @@ class DebridLinkDownloader(DownloaderBase):
             # Return container WITH the TorrentInfo to avoid re-fetching in download phase
             return TorrentContainer(infohash=infohash, files=files), None, info
 
-        return None, f"Not instantly available (status={info.status})", None
+        return None, f"Not instantly available (status={info.status})", info
 
     def add_torrent(self, infohash: str) -> str:
         """

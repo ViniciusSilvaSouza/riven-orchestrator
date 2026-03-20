@@ -226,6 +226,7 @@ class RealDebridDownloader(DownloaderBase):
         infohash: str,
         item_type: ProcessedItemType,
         greedy: bool = True,
+        retain_pending: bool = False,
         **kwargs: Any,
     ) -> TorrentContainer | None:
         """
@@ -238,11 +239,24 @@ class RealDebridDownloader(DownloaderBase):
 
         try:
             torrent_id = self.add_torrent(infohash)
-            container, reason, info = self._process_torrent(
+            container, reason, info = self.probe_torrent(
                 torrent_id, infohash, item_type, greedy=greedy
             )
 
             if container is None and reason:
+                if (
+                    retain_pending
+                    and info is not None
+                    and reason.startswith("Not instantly available")
+                ):
+                    pending_container = TorrentContainer(
+                        infohash=infohash,
+                        files=[],
+                        torrent_id=torrent_id,
+                        torrent_info=info,
+                    )
+                    return pending_container
+
                 # Failed validation - delete the torrent
 
                 logger.debug(f"Availability check failed [{infohash}]: {reason}")
@@ -322,6 +336,21 @@ class RealDebridDownloader(DownloaderBase):
                     pass
 
             return None
+
+    def probe_torrent(
+        self,
+        torrent_id: int | str,
+        infohash: str,
+        item_type: ProcessedItemType,
+        greedy: bool = True,
+        **kwargs: Any,
+    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+        return self._process_torrent(
+            str(torrent_id),
+            infohash,
+            item_type,
+            greedy=greedy,
+        )
 
     def _process_torrent(
         self,
@@ -424,7 +453,7 @@ class RealDebridDownloader(DownloaderBase):
             return TorrentContainer(infohash=infohash, files=files), None, info
 
         if info.status in ("downloading", "queued"):
-            return None, f"Not instantly available (status={info.status})", None
+            return None, f"Not instantly available (status={info.status})", info
 
         if info.status in (
             "magnet_error",

@@ -6,17 +6,17 @@ from typing import Any, Generic, Literal, TypeVar, cast
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from program.media.item import ProcessedItemType
 from program.services.downloaders.models import (
     DebridFile,
     InvalidDebridFileException,
     TorrentContainer,
     TorrentInfo,
-    UserInfo,
     UnrestrictedLink,
+    UserInfo,
 )
 from program.settings import settings_manager
 from program.utils.request import CircuitBreakerOpen, SmartResponse, SmartSession
-from program.media.item import ProcessedItemType
 
 from .shared import DownloaderBase, premium_days_left
 
@@ -289,7 +289,8 @@ class AllDebridDownloader(DownloaderBase):
         self,
         infohash: str,
         item_type: ProcessedItemType,
-        **kwargs: Any,
+        retain_pending: bool = False,
+        **_kwargs: Any,
     ) -> TorrentContainer | None:
         """
         Attempt a quick availability check by adding the magnet to AllDebrid
@@ -303,11 +304,23 @@ class AllDebridDownloader(DownloaderBase):
 
         try:
             torrent_id = self.add_torrent(infohash)
-            container, reason, info = self._process_torrent(
+            container, reason, info = self.probe_torrent(
                 torrent_id, infohash, item_type
             )
 
             if container is None and reason:
+                if (
+                    retain_pending
+                    and info is not None
+                    and reason.startswith("Not instantly available")
+                ):
+                    return TorrentContainer(
+                        infohash=infohash,
+                        files=[],
+                        torrent_id=torrent_id,
+                        torrent_info=info,
+                    )
+
                 logger.debug(f"Availability check failed [{infohash}]: {reason}")
 
                 # Failed validation - delete the torrent
@@ -371,6 +384,19 @@ class AllDebridDownloader(DownloaderBase):
 
             return None
 
+    def probe_torrent(
+        self,
+        torrent_id: int | str,
+        infohash: str,
+        item_type: ProcessedItemType,
+        **_kwargs: Any,
+    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+        return self._process_torrent(
+            int(torrent_id),
+            infohash,
+            item_type,
+        )
+
     def _process_torrent(
         self,
         torrent_id: int,
@@ -392,7 +418,7 @@ class AllDebridDownloader(DownloaderBase):
         # Check if torrent is ready (statusCode 4 = Ready)
         # Status codes: 0=In Queue, 1=Downloading, 2=Compressing, 3=Uploading, 4=Ready
         if info.status != "Ready":
-            return None, f"Not instantly available (status={info.status})", None
+            return None, f"Not instantly available (status={info.status})", info
 
         # Get files from the magnet/files endpoint
         files_data = self._get_magnet_files(torrent_id)
@@ -456,7 +482,7 @@ class AllDebridDownloader(DownloaderBase):
         file_list: list[AllDebridFile],
         item_type: ProcessedItemType,
         files: list[DebridFile],
-        infohash: str,
+        _infohash: str,
         path_prefix: str = "",
     ) -> None:
         """

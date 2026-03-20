@@ -75,6 +75,12 @@ class DebridResolutionTask(Base):
     item_id: Mapped[int] = mapped_column(sqlalchemy.Integer, index=True)
     infohash: Mapped[str] = mapped_column(sqlalchemy.String(64), index=True)
     provider: Mapped[str | None] = mapped_column(sqlalchemy.String(32), index=True)
+    provider_torrent_id: Mapped[str | None] = mapped_column(
+        sqlalchemy.String(128), nullable=True
+    )
+    provider_torrent_status: Mapped[str | None] = mapped_column(
+        sqlalchemy.String(64), nullable=True
+    )
     stream_title: Mapped[str | None] = mapped_column(sqlalchemy.String(), nullable=True)
     trigger: Mapped[DebridTaskTrigger] = mapped_column(
         sqlalchemy.Enum(

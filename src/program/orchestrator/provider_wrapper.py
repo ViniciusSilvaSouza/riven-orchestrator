@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 class ProviderResolveStatus(str, Enum):
     RESOLVED = "resolved"
+    ACQUIRING = "acquiring"
     NOT_CACHED = "not_cached"
 
 
@@ -31,6 +32,10 @@ class ProviderCacheResult:
     @property
     def is_cached(self) -> bool:
         return self.status == ProviderResolveStatus.RESOLVED and self.container is not None
+
+    @property
+    def is_acquiring(self) -> bool:
+        return self.status == ProviderResolveStatus.ACQUIRING and self.container is not None
 
 
 @dataclass
@@ -58,14 +63,66 @@ class ProviderResolveWrapper:
         *,
         item: "MediaItem",
         stream: "Stream",
+        allow_pending: bool = False,
     ) -> ProviderCacheResult:
-        container = self._downloader.validate_stream_on_service(stream, item, provider)
+        container = self._downloader.validate_stream_on_service(
+            stream,
+            item,
+            provider,
+            allow_pending=allow_pending,
+        )
         if not container:
             return ProviderCacheResult(
                 infohash=infohash,
                 provider=provider.key,
                 status=ProviderResolveStatus.NOT_CACHED,
                 container=None,
+            )
+
+        if not container.files:
+            return ProviderCacheResult(
+                infohash=infohash,
+                provider=provider.key,
+                status=ProviderResolveStatus.ACQUIRING,
+                container=container,
+            )
+
+        return ProviderCacheResult(
+            infohash=infohash,
+            provider=provider.key,
+            status=ProviderResolveStatus.RESOLVED,
+            container=container,
+        )
+
+    def check_existing_torrent(
+        self,
+        provider: "DownloaderBase",
+        infohash: str,
+        *,
+        item: "MediaItem",
+        stream: "Stream",
+        torrent_id: int | str,
+    ) -> ProviderCacheResult:
+        container = self._downloader.probe_torrent_on_service(
+            stream,
+            item,
+            provider,
+            torrent_id,
+        )
+        if not container:
+            return ProviderCacheResult(
+                infohash=infohash,
+                provider=provider.key,
+                status=ProviderResolveStatus.NOT_CACHED,
+                container=None,
+            )
+
+        if not container.files:
+            return ProviderCacheResult(
+                infohash=infohash,
+                provider=provider.key,
+                status=ProviderResolveStatus.ACQUIRING,
+                container=container,
             )
 
         return ProviderCacheResult(
@@ -93,7 +150,7 @@ class ProviderResolveWrapper:
             return ProviderResolveResult(
                 infohash=infohash,
                 provider=provider.key,
-                status=ProviderResolveStatus.NOT_CACHED,
+                status=cache_result.status,
                 download_result=None,
             )
 

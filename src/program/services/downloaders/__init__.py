@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
+
 from loguru import logger
 from RTN import ParsedData
 
+from program.core.runner import MediaItemGenerator, Runner, RunnerResult
 from program.media.item import (
     Episode,
     MediaItem,
@@ -10,10 +12,10 @@ from program.media.item import (
     Season,
     Show,
 )
-from program.media.state import States
-from program.media.stream import Stream
 from program.media.media_entry import MediaEntry
 from program.media.models import ActiveStream, MediaMetadata
+from program.media.state import States
+from program.media.stream import Stream
 from program.orchestrator import DebridCacheStatus, debrid_manager
 from program.services.downloaders.models import (
     DebridFile,
@@ -26,16 +28,15 @@ from program.services.downloaders.models import (
 )
 from program.services.downloaders.shared import (
     DownloaderBase,
-    sort_streams_by_quality,
     parse_filename,
+    sort_streams_by_quality,
 )
 from program.settings import settings_manager
 from program.utils.request import CircuitBreakerOpen
-from program.core.runner import MediaItemGenerator, Runner, RunnerResult
 
-from .realdebrid import RealDebridDownloader
-from .debridlink import DebridLinkDownloader
 from .alldebrid import AllDebridDownloader
+from .debridlink import DebridLinkDownloader
+from .realdebrid import RealDebridDownloader
 
 
 class Downloader(Runner[None, DownloaderBase]):
@@ -357,6 +358,7 @@ class Downloader(Runner[None, DownloaderBase]):
         item: MediaItem,
         service: "DownloaderBase",
         greedy: bool = True,
+        allow_pending: bool = False,
     ) -> TorrentContainer | None:
         """
         Validate a single stream on a specific service by ensuring its files match the item's requirements.
@@ -370,9 +372,18 @@ class Downloader(Runner[None, DownloaderBase]):
             return None
 
         if service.key == "realdebrid":
-            container: TorrentContainer | None = service.get_instant_availability(stream.infohash, item.type, greedy=greedy)
+            container: TorrentContainer | None = service.get_instant_availability(
+                stream.infohash,
+                item.type,
+                greedy=greedy,
+                retain_pending=allow_pending,
+            )
         else:
-            container: TorrentContainer | None = service.get_instant_availability(stream.infohash, item.type)
+            container = service.get_instant_availability(
+                stream.infohash,
+                item.type,
+                retain_pending=allow_pending,
+            )
 
         if not container:
             logger.debug(
@@ -382,6 +393,61 @@ class Downloader(Runner[None, DownloaderBase]):
 
         if container.files:
             return container
+
+        if allow_pending and container.torrent_id and container.torrent_info:
+            return container
+
+        return None
+
+    def probe_torrent_on_service(
+        self,
+        stream: Stream,
+        item: MediaItem,
+        service: "DownloaderBase",
+        torrent_id: int | str,
+        greedy: bool = True,
+    ) -> TorrentContainer | None:
+        """
+        Reinspect an already-added provider torrent and return either a ready container
+        or a pending container that carries provider torrent state.
+        """
+
+        if item.type == "mediaitem":
+            logger.debug(
+                f"Item {item.log_string} has generic type 'mediaitem', cannot probe torrent {stream.infohash}."
+            )
+            return None
+
+        if service.key == "realdebrid":
+            container, reason, info = service.probe_torrent(
+                torrent_id,
+                stream.infohash,
+                item.type,
+                greedy=greedy,
+            )
+        else:
+            container, reason, info = service.probe_torrent(
+                torrent_id,
+                stream.infohash,
+                item.type,
+            )
+
+        if container:
+            container.torrent_id = torrent_id
+            container.torrent_info = info
+            return container
+
+        if (
+            info is not None
+            and reason is not None
+            and reason.startswith("Not instantly available")
+        ):
+            return TorrentContainer(
+                infohash=stream.infohash,
+                files=[],
+                torrent_id=torrent_id,
+                torrent_info=info,
+            )
 
         return None
 

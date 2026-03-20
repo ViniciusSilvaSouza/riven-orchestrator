@@ -92,3 +92,28 @@ def test_matches_item_no_selected_files():
     )
     item = Movie({"imdb_id": "tt1375666", "requested_by": "user", "title": "Inception"})
     assert realdebrid_downloader._matches_item(torrent_info, item) is False
+
+
+def test_pending_realdebrid_status_keeps_torrent_info():
+    downloader = RealDebridDownloader.__new__(RealDebridDownloader)
+    downloader.get_torrent_info = lambda _torrent_id: SimpleNamespace(
+        status="queued",
+        files={
+            1: SimpleNamespace(
+                filename="example.mkv",
+                path="/example.mkv",
+                bytes=1024,
+            )
+        },
+    )
+
+    container, reason, info = downloader._process_torrent(
+        torrent_id="rd-123",
+        infohash="deadbeef",
+        item_type="episode",
+    )
+
+    assert container is None
+    assert reason == "Not instantly available (status=queued)"
+    assert info is not None
+    assert info.status == "queued"

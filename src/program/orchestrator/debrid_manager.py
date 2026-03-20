@@ -77,13 +77,26 @@ class DebridManager:
         self._negative_ttl = timedelta(
             minutes=settings_manager.settings.downloaders.orchestrator.cache_negative_ttl_minutes
         )
+        self._uncached_acquire_fallback = (
+            settings_manager.settings.downloaders.orchestrator.uncached_acquire_fallback
+        )
+        self._pending_acquire_poll = timedelta(
+            seconds=settings_manager.settings.downloaders.orchestrator.uncached_acquire_poll_seconds
+        )
+        self._pending_acquire_max_wait = timedelta(
+            minutes=settings_manager.settings.downloaders.orchestrator.uncached_acquire_max_wait_minutes
+        )
+        self._queue_backoff = timedelta(minutes=1)
+        self._negative_reprobe_after = min(
+            self._negative_ttl,
+            max(self._queue_backoff * 5, self._pending_acquire_poll * 5),
+        )
         self._strategy = (
             settings_manager.settings.downloaders.orchestrator.provider_strategy
         )
         self._priority_order = (
             settings_manager.settings.downloaders.orchestrator.provider_priority
         )
-        self._queue_backoff = timedelta(minutes=1)
         self._stranded_recovery_delay = max(
             self._negative_ttl,
             self._queue_backoff * 5,
@@ -125,7 +138,13 @@ class DebridManager:
     def sync_services(self, services: list["DownloaderBase"]) -> None:
         self._registry.sync_services(services)
 
-    def select_providers(self, services: list["DownloaderBase"], infohash: str) -> list["DownloaderBase"]:
+    def select_providers(
+        self,
+        services: list["DownloaderBase"],
+        infohash: str,
+        *,
+        ignore_negative_cache: bool = False,
+    ) -> list["DownloaderBase"]:
         self.sync_services(services)
         available: list[DownloaderBase] = []
         cached_first: list[DownloaderBase] = []
@@ -145,7 +164,7 @@ class DebridManager:
             cached = self.get_cached(infohash, service.key)
             if cached == DebridCacheStatus.CACHED:
                 cached_first.append(service)
-            elif cached == DebridCacheStatus.NOT_FOUND:
+            elif cached == DebridCacheStatus.NOT_FOUND and not ignore_negative_cache:
                 skipped_negative_cache.append(service.key)
                 logger.debug(f"Skipping {service.key} for {infohash}: negative cache still valid")
             else:
@@ -203,6 +222,57 @@ class DebridManager:
             service.key,
         )
 
+    def _get_valid_negative_cache_retry_at(
+        self,
+        infohash: str,
+        services: list["DownloaderBase"],
+    ) -> datetime | None:
+        provider_keys = [service.key for service in services]
+        if not provider_keys:
+            return None
+
+        now = datetime.utcnow()
+        try:
+            with db_session() as session:
+                cache_rows = (
+                    session.execute(
+                        select(DebridResolutionCache)
+                        .where(DebridResolutionCache.infohash == infohash)
+                        .where(DebridResolutionCache.provider.in_(provider_keys))
+                        .where(DebridResolutionCache.status == DebridCacheStatus.NOT_FOUND)
+                    )
+                    .scalars()
+                    .all()
+                )
+        except Exception as exc:
+            logger.debug(
+                f"Failed reading negative cache retry window for {infohash}: {exc}"
+            )
+            return None
+
+        retry_at = None
+        for cache_row in cache_rows:
+            expires_at = cache_row.last_checked + self._negative_ttl
+            if expires_at <= now:
+                continue
+            if retry_at is None or expires_at < retry_at:
+                retry_at = expires_at
+        return retry_at
+
+    def _should_reprobe_negative_cache(
+        self,
+        *,
+        created_at: datetime,
+        provider_torrent_id: str | None,
+    ) -> bool:
+        if provider_torrent_id:
+            return False
+
+        if not self._uncached_acquire_fallback:
+            return False
+
+        return datetime.utcnow() - created_at >= self._negative_reprobe_after
+
     def record_provider_attempt(self, provider: str) -> bool:
         with self._provider_state_lock:
             managed = self._registry.get(provider)
@@ -253,6 +323,8 @@ class DebridManager:
                             item_id=item.id,
                             infohash=stream.infohash,
                             provider=None,
+                            provider_torrent_id=None,
+                            provider_torrent_status=None,
                             stream_title=stream.raw_title,
                             trigger=trigger,
                             priority=priority,
@@ -931,9 +1003,36 @@ class DebridManager:
             item_type = item.type
             task_infohash = task.infohash
             stream_infohash = stream.infohash
+            task_created_at = task.created_at
+            task_provider_torrent_id = task.provider_torrent_id
 
-        providers = self.select_providers(downloader.initialized_services, task_infohash)
-        if provider_hint:
+        if provider_hint and task_provider_torrent_id:
+            providers = self.select_providers(
+                [
+                    service
+                    for service in downloader.initialized_services
+                    if service.key == provider_hint
+                ],
+                task_infohash,
+                ignore_negative_cache=True,
+            )
+        else:
+            providers = self.select_providers(
+                downloader.initialized_services,
+                task_infohash,
+            )
+
+        candidate_services = (
+            [
+                service
+                for service in downloader.initialized_services
+                if service.key == provider_hint
+            ]
+            if provider_hint and task_provider_torrent_id
+            else downloader.initialized_services
+        )
+
+        if provider_hint and not task_provider_torrent_id:
             hinted = [service for service in providers if service.key == provider_hint]
             others = [service for service in providers if service.key != provider_hint]
             providers = hinted + others
@@ -941,13 +1040,54 @@ class DebridManager:
                 f"Task {task_id} provider hint='{provider_hint}', ordered providers={[service.key for service in providers]}"
             )
         if not providers:
-            self._requeue_task(
-                task_id,
-                error="No providers available for task",
-                delay=self._queue_backoff,
-                consume_attempt=False,
+            negative_retry_at = self._get_valid_negative_cache_retry_at(
+                task_infohash,
+                candidate_services,
             )
-            return False
+
+            if negative_retry_at and self._should_reprobe_negative_cache(
+                created_at=task_created_at,
+                provider_torrent_id=task_provider_torrent_id,
+            ):
+                providers = self.select_providers(
+                    candidate_services,
+                    task_infohash,
+                    ignore_negative_cache=True,
+                )
+                if provider_hint and not task_provider_torrent_id:
+                    hinted = [
+                        service for service in providers if service.key == provider_hint
+                    ]
+                    others = [
+                        service for service in providers if service.key != provider_hint
+                    ]
+                    providers = hinted + others
+                if providers:
+                    logger.warning(
+                        "Task {} bypassing stale negative cache for {} after waiting {}".format(
+                            task_id,
+                            task_infohash,
+                            datetime.utcnow() - task_created_at,
+                        )
+                    )
+
+            if not providers:
+                delay = self._queue_backoff
+                error = "No providers available for task"
+                if negative_retry_at:
+                    delay = max(self._queue_backoff, negative_retry_at - datetime.utcnow())
+                    error = (
+                        "All providers blocked by negative cache until "
+                        f"{negative_retry_at.isoformat()}"
+                    )
+
+                self._requeue_task(
+                    task_id,
+                    error=error,
+                    delay=delay,
+                    consume_attempt=False,
+                )
+                return False
 
         last_error = "No provider could resolve stream"
         eligible_services = []
@@ -966,18 +1106,49 @@ class DebridManager:
             )
             return False
 
-        logger.debug(
-            f"Task {task_id} probing cache in parallel across providers={[service.key for service in eligible_services]}"
-        )
         probe_item = SimpleNamespace(id=item_id, type=item_type, log_string=item_log_string)
         probe_stream = SimpleNamespace(infohash=stream_infohash)
-        selected_service, selected_cache, probe_error = self._probe_provider_caches_parallel(
-            provider_wrapper,
-            eligible_services,
-            task_infohash,
-            probe_item,
-            probe_stream,
-        )
+        selected_service = None
+        selected_cache = None
+        probe_error = ""
+
+        if task_provider_torrent_id and provider_hint:
+            selected_service = eligible_services[0]
+            logger.debug(
+                "Task {} polling provider-side torrent {} on {}".format(
+                    task_id,
+                    task_provider_torrent_id,
+                    selected_service.key,
+                )
+            )
+            try:
+                selected_cache = provider_wrapper.check_existing_torrent(
+                    selected_service,
+                    task_infohash,
+                    item=probe_item,
+                    stream=probe_stream,
+                    torrent_id=task_provider_torrent_id,
+                )
+            except Exception as exc:
+                self.save_resolution(
+                    task_infohash, selected_service.key, DebridCacheStatus.ERROR
+                )
+                self.record_provider_exception(selected_service.key, exc)
+                probe_error = str(exc)
+                selected_service = None
+                selected_cache = None
+        else:
+            logger.debug(
+                f"Task {task_id} probing cache in parallel across providers={[service.key for service in eligible_services]}"
+            )
+            selected_service, selected_cache, probe_error = self._probe_provider_caches_parallel(
+                provider_wrapper,
+                eligible_services,
+                task_infohash,
+                probe_item,
+                probe_stream,
+            )
+
         if selected_service is None or selected_cache is None:
             logger.warning(
                 f"Task {task_id} failed cache probe across providers: {probe_error or last_error}"
@@ -986,6 +1157,74 @@ class DebridManager:
                 task_id,
                 error=probe_error or last_error,
                 delay=self._queue_backoff * 5,
+            )
+            return False
+
+        if (
+            task_provider_torrent_id
+            and not selected_cache.is_cached
+            and not selected_cache.is_acquiring
+        ):
+            self._cleanup_provider_torrent(selected_service, task_provider_torrent_id)
+            with db_session() as session:
+                task = session.get(DebridResolutionTask, task_id)
+                if task is not None:
+                    self._clear_pending_provider_state(task)
+                    session.add(task)
+                    session.commit()
+            self._requeue_task(
+                task_id,
+                error=f"Pending provider torrent is no longer available on {selected_service.key}",
+                delay=self._queue_backoff * 5,
+            )
+            return False
+
+        if selected_cache.is_acquiring:
+            provider_status = None
+            if (
+                selected_cache.container
+                and selected_cache.container.torrent_info
+                and selected_cache.container.torrent_info.status
+            ):
+                provider_status = selected_cache.container.torrent_info.status
+
+            if datetime.utcnow() - task_created_at >= self._pending_acquire_max_wait:
+                self._cleanup_provider_torrent(
+                    selected_service,
+                    selected_cache.container.torrent_id
+                    if selected_cache.container
+                    else task_provider_torrent_id,
+                )
+                with db_session() as session:
+                    task = session.get(DebridResolutionTask, task_id)
+                    if task is not None:
+                        self._clear_pending_provider_state(task)
+                        session.add(task)
+                        session.commit()
+                self._requeue_task(
+                    task_id,
+                    error=(
+                        f"Provider acquisition timed out on {selected_service.key}"
+                        f" (status={provider_status or 'unknown'})"
+                    ),
+                    delay=self._queue_backoff * 5,
+                )
+                return False
+
+            self._park_acquiring_task(
+                task_id,
+                provider=selected_service.key,
+                torrent_id=(
+                    selected_cache.container.torrent_id
+                    if selected_cache.container and selected_cache.container.torrent_id
+                    else task_provider_torrent_id
+                ),
+                provider_status=provider_status,
+                delay=self._pending_acquire_poll,
+                error=(
+                    f"Waiting for provider acquisition on {selected_service.key}"
+                    f" (status={provider_status or 'unknown'})"
+                ),
             )
             return False
 
@@ -1025,6 +1264,7 @@ class DebridManager:
                     return False
 
                 task.provider = selected_service.key
+                self._clear_pending_provider_state(task)
                 task.updated_at = datetime.utcnow()
                 session.add(task)
                 session.commit()
@@ -1125,6 +1365,7 @@ class DebridManager:
             return (None, None, "No providers available for cache probing")
 
         max_workers = max(1, len(services))
+        acquiring_results: dict[str, ProviderCacheResult] = {}
         last_error = ""
         logger.debug(
             f"Starting parallel cache probe for infohash={infohash} providers={[service.key for service in services]}"
@@ -1137,6 +1378,7 @@ class DebridManager:
                     infohash,
                     item=item,
                     stream=stream,
+                    allow_pending=self._uncached_acquire_fallback,
                 ): service
                 for service in services
             }
@@ -1154,6 +1396,20 @@ class DebridManager:
                         )
                         return (service, cache_result, "")
 
+                    if cache_result.is_acquiring:
+                        acquiring_results[service.key] = cache_result
+                        logger.debug(
+                            f"Cache probe pending for infohash={infohash} on provider={service.key}"
+                        )
+                        last_error = (
+                            cache_result.container.torrent_info.status
+                            if cache_result.container
+                            and cache_result.container.torrent_info
+                            and cache_result.container.torrent_info.status
+                            else f"Provider acquisition started on {service.key}"
+                        )
+                        continue
+
                     self.save_resolution(infohash, service.key, DebridCacheStatus.NOT_FOUND)
                     logger.debug(
                         f"Cache probe miss for infohash={infohash} on provider={service.key}"
@@ -1164,7 +1420,74 @@ class DebridManager:
                     self.record_provider_exception(service.key, exc)
                     last_error = str(exc)
 
+        if acquiring_results:
+            for service in services:
+                cache_result = acquiring_results.get(service.key)
+                if cache_result is None:
+                    continue
+                _log_debrid(
+                    f"Cache probe pending winner for infohash={infohash}: provider={service.key}"
+                )
+                return (service, cache_result, "")
+
         return (None, None, last_error or "No provider could resolve stream")
+
+    def _park_acquiring_task(
+        self,
+        task_id: int,
+        *,
+        provider: str,
+        torrent_id: int | str,
+        provider_status: str | None,
+        delay: timedelta,
+        error: str,
+    ) -> None:
+        with db_session() as session:
+            task = session.get(DebridResolutionTask, task_id)
+            if task is None:
+                return
+
+            if task.attempts > 0:
+                task.attempts -= 1
+
+            task.status = DebridTaskStatus.PENDING
+            task.provider = provider
+            task.provider_torrent_id = str(torrent_id)
+            task.provider_torrent_status = provider_status
+            task.available_at = datetime.utcnow() + delay
+            task.locked_at = None
+            task.updated_at = datetime.utcnow()
+            task.last_error = error
+            session.add(task)
+            session.commit()
+            with self._metrics_lock:
+                self._queue_requeued_total += 1
+            logger.info(
+                "Parked task {} for provider-side acquisition on {} (torrent_id={}, status={})".format(
+                    task_id,
+                    provider,
+                    torrent_id,
+                    provider_status or "unknown",
+                )
+            )
+
+    def _clear_pending_provider_state(self, task: DebridResolutionTask) -> None:
+        task.provider_torrent_id = None
+        task.provider_torrent_status = None
+
+    def _cleanup_provider_torrent(
+        self,
+        service: "DownloaderBase",
+        torrent_id: int | str | None,
+    ) -> None:
+        if not torrent_id:
+            return
+        try:
+            service.delete_torrent(torrent_id)
+        except Exception as exc:
+            logger.debug(
+                f"Failed to delete provider torrent {torrent_id} on {service.key}: {exc}"
+            )
 
     def _cancel_sibling_tasks(self, session, item_id: int, *, exclude_task_id: int) -> None:
         siblings = (
@@ -1239,6 +1562,7 @@ class DebridManager:
         task.locked_at = None
         task.updated_at = now
         task.last_error = error
+        self._clear_pending_provider_state(task)
         session.add(task)
         with self._metrics_lock:
             if status == DebridTaskStatus.COMPLETED:
@@ -1526,6 +1850,13 @@ class DebridManager:
             "strategy": self._strategy,
             "priority_order": self._priority_order,
             "negative_ttl_minutes": int(self._negative_ttl.total_seconds() / 60),
+            "uncached_acquire_fallback": self._uncached_acquire_fallback,
+            "uncached_acquire_poll_seconds": int(
+                self._pending_acquire_poll.total_seconds()
+            ),
+            "uncached_acquire_max_wait_minutes": int(
+                self._pending_acquire_max_wait.total_seconds() / 60
+            ),
             "shared_queue_enabled": settings_manager.settings.downloaders.orchestrator.shared_queue,
             "metrics": {
                 "cache": {

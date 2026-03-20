@@ -53,6 +53,22 @@ class DownloaderBase(ABC):
         """
 
     @abstractmethod
+    def probe_torrent(
+        self,
+        torrent_id: int | str,
+        infohash: str,
+        item_type: ProcessedItemType,
+        **kwargs: Any,
+    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+        """
+        Inspect an already-added torrent and translate provider state into a normalized container/result tuple.
+
+        Returns:
+            tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+            (container if ready, reason string if not ready/invalid, provider torrent info)
+        """
+
+    @abstractmethod
     def add_torrent(self, infohash: str) -> int | str:
         """
         Add a torrent and return its information
