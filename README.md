@@ -19,6 +19,14 @@
   <p>Plex torrent streaming through Debrid and 3rd party services like Overseerr, Mdblist, etc.</p>
 </div>
 
+> [!IMPORTANT]
+> This repository is an unofficial fork of [rivenmedia/riven](https://github.com/rivenmedia/riven).
+> It is maintained independently and is focused on queue orchestration, multi-debrid
+> scheduling, Seerr/Jellyfin workflows, and self-updating libraries.
+>
+> It should not be presented as an official release of Riven unless that relationship is
+> explicitly approved by the upstream maintainers.
+
 Services currently supported:
 
 | Type              | Supported                                                                         |
@@ -40,6 +48,9 @@ We are constantly adding features and improvements as we go along and squashing 
 
 ## Table of Contents
 
+- [About This Fork](#about-this-fork)
+- [Fork Focus](#fork-focus)
+- [Upstream Strategy](#upstream-strategy)
 - [Self Hosted](#self-hosted)
   - [Installation](#installation)
   - [Plex](#plex)
@@ -48,6 +59,66 @@ We are constantly adding features and improvements as we go along and squashing 
 - [License](#license)
 
 ---
+
+## About This Fork
+
+This fork exists because the upstream building blocks are strong, but the operator
+experience for a `Jellyfin + Debrid + Seerr` stack still needed tighter control around
+the part that matters most in practice: turning requests and tracked lists into content
+that is actually ready to play.
+
+The main product direction of this fork is:
+
+- `Seerr` as the request and discovery frontend
+- `Riven` as the execution engine for indexing, scraping, ranking, queueing, debrid
+  resolution, VFS, and media refresh
+- `Jellyfin` as the playback target
+
+The goal is not just "support more integrations". The goal is to make the library feel
+alive without becoming uncontrolled:
+
+- tracked sources can feed the catalog over time
+- queue pressure is visible and managed
+- multiple debrid providers can be used intentionally
+- playback readiness matters more than scrape count
+- availability state should flow back to Seerr without manual marking
+
+For the longer rationale, see [FORK_RATIONALE.md](FORK_RATIONALE.md).
+
+## Fork Focus
+
+Compared with the upstream project, this fork is currently focused on:
+
+- persistent/shared queue orchestration for debrid resolution
+- provider-aware scheduling, rate limiting, cooldowns, and negative cache behavior
+- more operationally real multi-debrid handling
+- Seerr write-back for availability in no-Arr Jellyfin workflows
+- better scraping behavior for localized catalogs by separating display locale from
+  scraper query aliases
+- PT-BR metadata and subtitle preferences for a Portuguese-first setup
+- self-hosted deployment flows that are easier to reason about and debug
+
+This makes the fork especially useful for operators who want a self-updating catalog in
+Jellyfin without relying on the full Arr stack as the source of truth.
+
+## Upstream Strategy
+
+This fork is not intended to be a dead-end branch.
+
+The current maintenance strategy is:
+
+- keep this fork usable as an opinionated distribution for the target workflow
+- propose smaller, self-contained improvements upstream when they are broadly useful
+- keep more opinionated product and deployment choices here when they are specific to
+  this workflow
+
+The current split plan lives in [UPSTREAM_CONTRIBUTION_PLAN.md](UPSTREAM_CONTRIBUTION_PLAN.md).
+
+In short:
+
+- bug fixes and isolated orchestration improvements are good upstream candidates
+- product-specific UX, deployment choices, and fork positioning stay here unless the
+  upstream maintainers want them
 
 ## Self Hosted
 
