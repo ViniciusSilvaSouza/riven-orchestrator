@@ -753,6 +753,28 @@ class ZileanConfig(Observable):
         default=1, ge=0, description="Number of retries for failed requests"
     )
     ratelimit: bool = Field(default=True, description="Enable rate limiting")
+    use_aliases: bool = Field(
+        default=True,
+        description="Try alternate aliases when the primary Zilean query has no results",
+    )
+    include_year: bool = Field(
+        default=True,
+        description="Send the media year to Zilean when available",
+    )
+    include_imdb_id: bool = Field(
+        default=True,
+        description="Send the IMDb ID to Zilean when available",
+    )
+    max_query_variants: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum number of Zilean title variants to try per scrape",
+    )
+    preferred_alias_countries: list[str] = Field(
+        default_factory=lambda: ["br", "pt", "us"],
+        description="Preferred alias country codes to prioritize for Zilean queries",
+    )
 
 
 class MediafusionConfig(Observable):

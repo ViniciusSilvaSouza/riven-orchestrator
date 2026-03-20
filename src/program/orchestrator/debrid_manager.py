@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import threading
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-import time
-import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -22,13 +22,13 @@ from program.orchestrator.models import (
     DebridTaskTrigger,
     ProviderHealthState,
 )
-from program.orchestrator.provider_registry import ManagedProvider, ProviderRegistry
+from program.orchestrator.provider_registry import ProviderRegistry
+from program.orchestrator.provider_workers import ProviderQueueWorkers
 from program.orchestrator.provider_wrapper import (
     ProviderCacheResult,
     ProviderResolveStatus,
     ProviderResolveWrapper,
 )
-from program.orchestrator.provider_workers import ProviderQueueWorkers
 from program.orchestrator.rate_limiter import ProviderRateLimiter
 from program.settings import settings_manager
 
@@ -83,6 +83,13 @@ class DebridManager:
             settings_manager.settings.downloaders.orchestrator.provider_priority
         )
         self._queue_backoff = timedelta(minutes=1)
+        self._processing_stale_after = timedelta(
+            seconds=max(
+                60,
+                settings_manager.settings.downloaders.orchestrator.shared_queue_poll_seconds
+                * 4,
+            )
+        )
         self._cache_hits = 0
         self._cache_negative_hits = 0
         self._cache_misses = 0
@@ -558,6 +565,11 @@ class DebridManager:
         downloader = program.services.downloader
         self.sync_services(downloader.initialized_services)
         self._last_queue_run_at = datetime.utcnow()
+        recovered = self._recover_stale_processing_tasks()
+        if recovered:
+            logger.warning(
+                f"Recovered {recovered} stale orchestrator task(s) left in processing state"
+            )
 
         processed = 0
         try:
@@ -600,6 +612,47 @@ class DebridManager:
             logger.error(f"Failed processing debrid resolution queue: {exc}")
 
         return processed
+
+    def _recover_stale_processing_tasks(self) -> int:
+        cutoff = datetime.utcnow() - self._processing_stale_after
+
+        try:
+            with db_session() as session:
+                stale_tasks = (
+                    session.execute(
+                        select(DebridResolutionTask)
+                        .where(
+                            DebridResolutionTask.status
+                            == DebridTaskStatus.PROCESSING
+                        )
+                        .where(
+                            (DebridResolutionTask.locked_at.is_(None))
+                            | (DebridResolutionTask.locked_at <= cutoff)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+                if not stale_tasks:
+                    return 0
+
+                now = datetime.utcnow()
+                for task in stale_tasks:
+                    task.status = DebridTaskStatus.PENDING
+                    task.available_at = now
+                    task.locked_at = None
+                    task.updated_at = now
+                    task.last_error = (
+                        "Recovered stale processing task after interrupted worker"
+                    )
+                    session.add(task)
+
+                session.commit()
+                return len(stale_tasks)
+        except Exception as exc:
+            logger.error(f"Failed recovering stale orchestrator tasks: {exc}")
+            return 0
 
     def _get_due_tasks(self, session, *, limit: int) -> list[DueTaskCandidate]:
         now = datetime.utcnow()
@@ -764,9 +817,10 @@ class DebridManager:
             item_id = item.id
             item_log_string = item.log_string
             item_type = item.type
+            task_infohash = task.infohash
             stream_infohash = stream.infohash
 
-        providers = self.select_providers(downloader.initialized_services, task.infohash)
+        providers = self.select_providers(downloader.initialized_services, task_infohash)
         if provider_hint:
             hinted = [service for service in providers if service.key == provider_hint]
             others = [service for service in providers if service.key != provider_hint]
@@ -806,7 +860,7 @@ class DebridManager:
         selected_service, selected_cache, probe_error = self._probe_provider_caches_parallel(
             provider_wrapper,
             eligible_services,
-            task.infohash,
+            task_infohash,
             probe_item,
             probe_stream,
         )
@@ -910,11 +964,13 @@ class DebridManager:
                 )
                 return True
         except Exception as exc:
-            self.save_resolution(task.infohash, selected_service.key, DebridCacheStatus.ERROR)
+            self.save_resolution(
+                task_infohash, selected_service.key, DebridCacheStatus.ERROR
+            )
             self.record_provider_exception(selected_service.key, exc)
             last_error = str(exc)
             logger.debug(
-                f"Queued resolution failed for {task.infohash} on {selected_service.key}: {exc}"
+                f"Queued resolution failed for {task_infohash} on {selected_service.key}: {exc}"
             )
 
         self._requeue_task(
