@@ -14,6 +14,14 @@ The real goal is a self-hosted `Stremio + Debrid` style stack with better contro
 observability, and playback readiness than the upstream defaults currently provide for
 this use case.
 
+More specifically, the desired user experience is:
+
+- a library that stays "alive" instead of depending only on manual requests
+- new releases entering the catalog as tracked lists and sources evolve
+- content becoming playable in Jellyfin without the operator micromanaging every step
+- automation that is aggressive enough to be useful, but controlled enough to avoid
+  hammering debrid providers or turning the library into noise
+
 That means solving the full path:
 
 1. request enters the system
@@ -29,7 +37,23 @@ This fork exists because that full loop matters more than any single integration
 
 ## Core motivations
 
-### 1. Queue management needed to become first-class
+### 1. A self-updating library needed guardrails
+
+One of the biggest practical pains was trying to build a library that could feed itself.
+
+The upstream-style workflow can ingest lists from Trakt and other sources, but without
+strong queue and orchestration control that easily becomes dangerous:
+
+- a large list can trigger broad indexing and scraping bursts
+- debrid providers can be hit too aggressively
+- the operator loses control over what is actually being processed
+- "automation" becomes closer to blind churn than to curated playback readiness
+
+The goal of this fork is not just "automatically add more things". The goal is to make
+that automation safe and intentional so the catalog can keep growing with new releases
+without behaving like an uncontrolled background job.
+
+### 2. Queue management needed to become first-class
 
 Before this work, it was too easy for the stack to behave like a collection of
 independent steps instead of a controlled pipeline.
@@ -44,7 +68,7 @@ system:
 
 That is why the fork treats queue orchestration as a product concern, not just a helper.
 
-### 2. Multi-debrid support needed to be operationally real
+### 3. Multi-debrid support needed to be operationally real
 
 Supporting multiple debrid providers is not only about storing multiple API keys.
 
@@ -59,7 +83,11 @@ To be useful in practice, multi-debrid orchestration needs:
 
 Without that, "multi-debrid" becomes theoretical rather than reliable.
 
-### 3. Rate limiting and provider health needed to be part of scheduling
+In other words: attaching more than one debrid provider should actually improve the
+system's behavior. It should not be a cosmetic configuration that still behaves like
+single-provider mode.
+
+### 4. Rate limiting and provider health needed to be part of scheduling
 
 In a real self-hosted deployment, the bottleneck is often not scraping itself but what
 happens after a stream is found:
@@ -72,7 +100,11 @@ happens after a stream is found:
 This fork treats rate limiting, cooldown windows, and negative cache as core
 orchestration concerns because that is what keeps the stack stable over time.
 
-### 4. Playback readiness matters more than scrape count
+That is especially important once the library is being fed by lists and background
+sources, because uncontrolled bulk processing is exactly how operators get provider bans,
+timeouts, or a library full of half-processed items.
+
+### 5. Playback readiness matters more than scrape count
 
 Finding torrents is not the same as having something playable.
 
@@ -92,7 +124,7 @@ That is why this fork cares deeply about:
 - VFS readiness
 - on-demand resolution paths such as `resolve_on_play`
 
-### 5. Seerr and Jellyfin needed a native bridge without Arr
+### 6. Seerr and Jellyfin needed a native bridge without Arr
 
 The original gap was real:
 
@@ -106,7 +138,7 @@ For this stack, manual "mark as available" breaks the experience.
 This fork therefore treats Seerr as a first-class request frontend that deserves status
 write-back from Riven, instead of pretending that only Arr should own that loop.
 
-### 6. Localization needed to be separated from scraping logic
+### 7. Localization needed to be separated from scraping logic
 
 Another important operational lesson from this fork is that display locale and scraper
 query locale are not the same problem.
@@ -123,7 +155,7 @@ That means the system needs to separate:
 
 This fork moves in that direction because localization should not sabotage discoverability.
 
-### 7. Self-hosted operation needed more control and less guesswork
+### 8. Self-hosted operation needed more control and less guesswork
 
 The fork is also motivated by operational concerns:
 
@@ -140,6 +172,10 @@ about it.
 
 Before this fork work, the main gaps were:
 
+- auto-fed libraries could grow without enough control over queue pressure
+- list-driven indexing could expand faster than debrid providers should be hit
+- multiple configured debrid providers did not necessarily translate into effective
+  multi-provider behavior
 - Seerr integration was effectively read-only
 - request context was not persisted cleanly enough for later status sync
 - queue behavior was not documented clearly enough for operators
@@ -193,6 +229,10 @@ The direction of the fork includes:
 
 The point is to make the queue observable and predictable.
 
+This is especially important for self-updating libraries, where background ingestion
+should continuously improve the catalog without turning every new list item into an
+uncontrolled burst of provider activity.
+
 ### 2. Multi-debrid behavior is shaped around real provider constraints
 
 The fork supports a model where multiple providers are not just configured but managed:
@@ -204,6 +244,10 @@ The fork supports a model where multiple providers are not just configured but m
 - provider health should not be poisoned by content-specific failures
 
 That is what makes multi-debrid usable for real traffic.
+
+It also aligns with the original operator expectation behind this fork: if someone
+chooses to attach more than one debrid account, the system should actually make use of
+that flexibility instead of effectively collapsing back into one-provider behavior.
 
 ### 3. Scraping and ranking are optimized for playback readiness
 
@@ -267,6 +311,19 @@ The fork also moves toward a better separation between:
 That matters for multilingual operators who want localized UI/metadata without hurting
 source discovery.
 
+### 9. The catalog is meant to stay alive
+
+The end-state behind this fork is a living catalog:
+
+- you can request something explicitly when you want
+- you can also follow lists and external sources that keep feeding the library
+- new releases should appear over time without manual babysitting
+- Jellyfin should feel like a catalog with real playback potential, not just a static
+  folder of manually managed files
+
+That only works if queueing, debrid usage, readiness, and metadata quality are all
+treated as part of the same system.
+
 ## Current behavior and scope
 
 This work intentionally focuses on the execution loop, not on imitating the full Arr model.
@@ -279,6 +336,7 @@ Current scope:
 - availability sync back to Seerr
 - Jellyfin-first flow without depending on Sonarr/Radarr
 - better operator visibility into how content becomes playable
+- a safer foundation for self-updating, list-fed libraries
 
 Not in scope yet:
 
@@ -293,6 +351,8 @@ This fork solves real operator problems:
 
 - users running Riven without a full Arr stack can still use Seerr as the request surface
 - operators get a clearer execution model for queueing and debrid resolution
+- operators trying to keep a library auto-fed by Trakt or other sources get better
+  control over how aggressively the stack processes new content
 - availability becomes visible in Seerr without manual intervention
 - playback readiness is treated as an end-to-end concern
 - the stack better supports a self-hosted streaming workflow centered on Debrid + Jellyfin
