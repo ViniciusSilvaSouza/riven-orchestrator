@@ -1,19 +1,21 @@
 """Shared functions for scrapers."""
 
+from typing import cast
+
 from loguru import logger
 from RTN import (
     RTN,
+    BaseRankingModel,
+    DefaultRanking,
     ParsedData,
     Torrent,
     sort_torrents,
-    BaseRankingModel,
-    DefaultRanking,
 )
 from RTN.models import SettingsModel
-from typing import cast
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.stream import Stream
+from program.services.scraper_selection import get_episode_stream_rank_adjustment
 from program.settings import settings_manager
 from program.settings.models import RTNSettingsModel, ScraperModel
 
@@ -222,6 +224,21 @@ def parse_results(
                     )
                     continue
 
+                parent_season = cast(Season, item.parent)
+                rank_adjustment = get_episode_stream_rank_adjustment(
+                    episode_number=item.number,
+                    absolute_number=item.absolute_number,
+                    season_number=parent_season.number,
+                    candidate_episodes=torrent.data.episodes,
+                    candidate_seasons=torrent.data.seasons,
+                )
+                if rank_adjustment:
+                    torrent.rank += rank_adjustment
+                    logger.trace(
+                        "Adjusted episode torrent rank by "
+                        f"{rank_adjustment} for {item.log_string}: {raw_title}"
+                    )
+
             if not manual and torrent.data.country and not item.is_anime:
                 # If country is present, then check to make sure it's correct. (Covers: US, UK, NZ, AU)
                 if (
@@ -309,8 +326,6 @@ def _check_item_year(item: MediaItem, data: ParsedData) -> bool:
             ])
 
     return data.year in valid_years
-
-
 def _get_item_country(item: MediaItem) -> str | None:
     """Get the country code for a country."""
 

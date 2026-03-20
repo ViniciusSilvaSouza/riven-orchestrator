@@ -1,13 +1,20 @@
-from contextlib import contextmanager
-from datetime import datetime, timedelta
 import importlib
 import time
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 from unittest.mock import Mock
 
 from program.orchestrator.debrid_manager import DebridManager, DueTaskCandidate
-from program.orchestrator.models import DebridCacheStatus
-from program.orchestrator.models import DebridTaskPriority, ProviderHealthState
-from program.orchestrator.provider_wrapper import ProviderCacheResult, ProviderResolveStatus
+from program.orchestrator.models import (
+    DebridCacheStatus,
+    DebridTaskPriority,
+    ProviderHealthState,
+)
+from program.orchestrator.provider_wrapper import (
+    ProviderCacheResult,
+    ProviderNoMatchingFilesError,
+    ProviderResolveStatus,
+)
 from program.orchestrator.rate_limiter import ProviderRateLimiter
 
 
@@ -211,6 +218,24 @@ def test_record_provider_exception_classifies_timeout():
     assert managed.cooldown_until is not None
     assert managed.last_error is not None
     assert "timeout" in managed.last_error
+
+
+def test_record_provider_exception_keeps_provider_available_for_content_mismatch():
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+    manager.sync_services([service])
+
+    manager.record_provider_exception(
+        "realdebrid",
+        ProviderNoMatchingFilesError("No valid files found for Episode X"),
+    )
+    managed = manager._registry.get("realdebrid")
+
+    assert managed is not None
+    assert managed.health == ProviderHealthState.HEALTHY
+    assert managed.cooldown_until is None
+    assert managed.last_error is not None
+    assert "content_mismatch" in managed.last_error
 
 
 def test_status_snapshot_exposes_metrics_and_last_error():

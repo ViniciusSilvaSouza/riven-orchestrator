@@ -26,6 +26,7 @@ from program.orchestrator.provider_registry import ProviderRegistry
 from program.orchestrator.provider_workers import ProviderQueueWorkers
 from program.orchestrator.provider_wrapper import (
     ProviderCacheResult,
+    ProviderNoMatchingFilesError,
     ProviderResolveStatus,
     ProviderResolveWrapper,
 )
@@ -963,6 +964,25 @@ class DebridManager:
                     f"Resolved queued stream {stream.infohash} for {item.log_string} using {selected_service.key}"
                 )
                 return True
+        except ProviderNoMatchingFilesError as exc:
+            self.save_resolution(
+                task_infohash, selected_service.key, DebridCacheStatus.ERROR
+            )
+            self.record_provider_exception(selected_service.key, exc)
+            with db_session() as session:
+                task = session.get(DebridResolutionTask, task_id)
+                if task is not None:
+                    self._finalize_task(
+                        session,
+                        task,
+                        status=DebridTaskStatus.FAILED,
+                        error=str(exc),
+                    )
+                    session.commit()
+            logger.debug(
+                f"Queued resolution failed for {task_infohash} on {selected_service.key}: {exc}"
+            )
+            return False
         except Exception as exc:
             self.save_resolution(
                 task_infohash, selected_service.key, DebridCacheStatus.ERROR
@@ -1165,6 +1185,9 @@ class DebridManager:
         error_text = str(exc).lower()
         exc_name = exc.__class__.__name__.lower()
 
+        if isinstance(exc, ProviderNoMatchingFilesError) or exc_name == "nomatchingfilesexception":
+            return (False, 0, "content_mismatch")
+
         if "429" in error_text or "rate limit" in error_text or "circuitbreakeropen" in exc_name:
             return (
                 True,
@@ -1187,12 +1210,30 @@ class DebridManager:
             "Provider error classified: "
             f"provider={provider}, class={classification}, cooldown={cooldown_minutes}m, error={exc}"
         )
+        if classification == "content_mismatch":
+            self.mark_provider_content_mismatch(
+                provider,
+                reason=f"{classification}: {exc}",
+            )
+            return
         self.mark_provider_error(
             provider,
             rate_limited=rate_limited,
             cooldown_minutes=cooldown_minutes,
             reason=f"{classification}: {exc}",
         )
+
+    def mark_provider_content_mismatch(
+        self,
+        provider: str,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        with self._provider_state_lock:
+            managed = self._registry.get(provider)
+            if managed is None:
+                return
+            managed.last_error = reason
 
     def mark_provider_error(
         self,
