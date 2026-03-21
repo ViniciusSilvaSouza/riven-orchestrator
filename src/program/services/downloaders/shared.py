@@ -9,6 +9,7 @@ from program.media.stream import Stream
 from program.services.downloaders.models import (
     TorrentContainer,
     TorrentInfo,
+    TorrentProbeResult,
     UserInfo,
     UnrestrictedLink,
 )
@@ -59,13 +60,9 @@ class DownloaderBase(ABC):
         infohash: str,
         item_type: ProcessedItemType,
         **kwargs: Any,
-    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+    ) -> TorrentProbeResult:
         """
-        Inspect an already-added torrent and translate provider state into a normalized container/result tuple.
-
-        Returns:
-            tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
-            (container if ready, reason string if not ready/invalid, provider torrent info)
+        Inspect an already-added torrent and translate provider state into a normalized, typed result.
         """
 
     @abstractmethod

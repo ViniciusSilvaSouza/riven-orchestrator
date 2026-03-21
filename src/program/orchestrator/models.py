@@ -81,6 +81,9 @@ class DebridResolutionTask(Base):
     provider_torrent_status: Mapped[str | None] = mapped_column(
         sqlalchemy.String(64), nullable=True
     )
+    acquiring_started_at: Mapped[datetime | None] = mapped_column(
+        sqlalchemy.DateTime, nullable=True
+    )
     stream_title: Mapped[str | None] = mapped_column(sqlalchemy.String(), nullable=True)
     trigger: Mapped[DebridTaskTrigger] = mapped_column(
         sqlalchemy.Enum(

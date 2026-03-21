@@ -13,6 +13,8 @@ from program.services.downloaders.models import (
     TorrentContainer,
     TorrentFile,
     TorrentInfo,
+    TorrentProbeResult,
+    TorrentProbeStatus,
     UserInfo,
     UnrestrictedLink,
 )
@@ -249,27 +251,25 @@ class DebridLinkDownloader(DownloaderBase):
 
         try:
             torrent_id = self.add_torrent(infohash)
-            container, reason, info = self.probe_torrent(
+            probe_result = self.probe_torrent(
                 torrent_id,
                 infohash,
                 item_type,
             )
 
-            if container is None and reason:
-                if (
-                    retain_pending
-                    and info is not None
-                    and reason.startswith("Not instantly available")
-                ):
+            if not probe_result.is_ready:
+                if retain_pending and probe_result.is_acquiring and probe_result.info is not None:
                     pending_container = TorrentContainer(
                         infohash=infohash,
                         files=[],
                         torrent_id=torrent_id,
-                        torrent_info=info,
+                        torrent_info=probe_result.info,
                     )
                     return pending_container
 
-                logger.debug(f"Availability check failed [{infohash}]: {reason}")
+                logger.debug(
+                    f"Availability check failed [{infohash}]: {probe_result.reason}"
+                )
 
                 # Failed validation - delete the torrent
                 if torrent_id:
@@ -287,7 +287,7 @@ class DebridLinkDownloader(DownloaderBase):
                 container.torrent_id = torrent_id
                 container.torrent_info = info
 
-            return container
+            return probe_result.container
 
         except CircuitBreakerOpen:
             logger.debug(f"Circuit breaker OPEN for Debrid-Link; skipping {infohash}")
@@ -338,7 +338,7 @@ class DebridLinkDownloader(DownloaderBase):
         infohash: str,
         item_type: ProcessedItemType,
         **kwargs: Any,
-    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+    ) -> TorrentProbeResult:
         return self._process_torrent(
             str(torrent_id),
             infohash,
@@ -350,21 +350,25 @@ class DebridLinkDownloader(DownloaderBase):
         torrent_id: str,
         infohash: str,
         item_type: ProcessedItemType,
-    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+    ) -> TorrentProbeResult:
         """
-        Process a single torrent and return (container, reason, info).
-
-        Returns:
-            (TorrentContainer or None, human-readable reason string if None, TorrentInfo or None)
+        Process a single torrent and return a typed probe result.
         """
 
         info = self.get_torrent_info(torrent_id)
 
         if not info:
-            return None, "no torrent info returned by Debrid-Link", None
+            return TorrentProbeResult(
+                status=TorrentProbeStatus.INVALID,
+                reason="no torrent info returned by Debrid-Link",
+            )
 
         if not info.files:
-            return None, "no files present in the torrent", None
+            return TorrentProbeResult(
+                status=TorrentProbeStatus.INVALID,
+                reason="no files present in the torrent",
+                info=info,
+            )
 
         # Status "downloaded" means completed/cached
         # Also check if downloadPercent == 100
@@ -397,12 +401,23 @@ class DebridLinkDownloader(DownloaderBase):
                     logger.debug(f"{infohash}: {e}")
 
             if not files:
-                return None, "no valid files after validation", None
+                return TorrentProbeResult(
+                    status=TorrentProbeStatus.INVALID,
+                    reason="no valid files after validation",
+                    info=info,
+                )
 
-            # Return container WITH the TorrentInfo to avoid re-fetching in download phase
-            return TorrentContainer(infohash=infohash, files=files), None, info
+            return TorrentProbeResult(
+                status=TorrentProbeStatus.READY,
+                container=TorrentContainer(infohash=infohash, files=files),
+                info=info,
+            )
 
-        return None, f"Not instantly available (status={info.status})", info
+        return TorrentProbeResult(
+            status=TorrentProbeStatus.ACQUIRING,
+            reason=f"Not instantly available (status={info.status})",
+            info=info,
+        )
 
     def add_torrent(self, infohash: str) -> str:
         """

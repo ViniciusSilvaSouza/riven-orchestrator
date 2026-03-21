@@ -419,34 +419,30 @@ class Downloader(Runner[None, DownloaderBase]):
             return None
 
         if service.key == "realdebrid":
-            container, reason, info = service.probe_torrent(
+            probe_result = service.probe_torrent(
                 torrent_id,
                 stream.infohash,
                 item.type,
                 greedy=greedy,
             )
         else:
-            container, reason, info = service.probe_torrent(
+            probe_result = service.probe_torrent(
                 torrent_id,
                 stream.infohash,
                 item.type,
             )
 
-        if container:
-            container.torrent_id = torrent_id
-            container.torrent_info = info
-            return container
+        if probe_result.is_ready and probe_result.container:
+            probe_result.container.torrent_id = torrent_id
+            probe_result.container.torrent_info = probe_result.info
+            return probe_result.container
 
-        if (
-            info is not None
-            and reason is not None
-            and reason.startswith("Not instantly available")
-        ):
+        if probe_result.is_acquiring and probe_result.info is not None:
             return TorrentContainer(
                 infohash=stream.infohash,
                 files=[],
                 torrent_id=torrent_id,
-                torrent_info=info,
+                torrent_info=probe_result.info,
             )
 
         return None

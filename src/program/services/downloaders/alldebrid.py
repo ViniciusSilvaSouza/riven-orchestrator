@@ -12,6 +12,8 @@ from program.services.downloaders.models import (
     InvalidDebridFileException,
     TorrentContainer,
     TorrentInfo,
+    TorrentProbeResult,
+    TorrentProbeStatus,
     UnrestrictedLink,
     UserInfo,
 )
@@ -304,24 +306,22 @@ class AllDebridDownloader(DownloaderBase):
 
         try:
             torrent_id = self.add_torrent(infohash)
-            container, reason, info = self.probe_torrent(
+            probe_result = self.probe_torrent(
                 torrent_id, infohash, item_type
             )
 
-            if container is None and reason:
-                if (
-                    retain_pending
-                    and info is not None
-                    and reason.startswith("Not instantly available")
-                ):
+            if not probe_result.is_ready:
+                if retain_pending and probe_result.is_acquiring and probe_result.info is not None:
                     return TorrentContainer(
                         infohash=infohash,
                         files=[],
                         torrent_id=torrent_id,
-                        torrent_info=info,
+                        torrent_info=probe_result.info,
                     )
 
-                logger.debug(f"Availability check failed [{infohash}]: {reason}")
+                logger.debug(
+                    f"Availability check failed [{infohash}]: {probe_result.reason}"
+                )
 
                 # Failed validation - delete the torrent
                 if torrent_id:
@@ -339,7 +339,7 @@ class AllDebridDownloader(DownloaderBase):
                 container.torrent_id = torrent_id
                 container.torrent_info = info
 
-            return container
+            return probe_result.container
 
         except CircuitBreakerOpen:
             logger.debug(f"Circuit breaker OPEN for AllDebrid; skipping {infohash}")
@@ -390,7 +390,7 @@ class AllDebridDownloader(DownloaderBase):
         infohash: str,
         item_type: ProcessedItemType,
         **_kwargs: Any,
-    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+    ) -> TorrentProbeResult:
         return self._process_torrent(
             int(torrent_id),
             infohash,
@@ -402,29 +402,37 @@ class AllDebridDownloader(DownloaderBase):
         torrent_id: int,
         infohash: str,
         item_type: ProcessedItemType,
-    ) -> tuple[TorrentContainer | None, str | None, TorrentInfo | None]:
+    ) -> TorrentProbeResult:
         """
-        Process a single torrent and return (container, reason, info).
-
-        Returns:
-            (TorrentContainer or None, human-readable reason string if None, TorrentInfo or None)
+        Process a single torrent and return a typed probe result.
         """
 
         info = self.get_torrent_info(torrent_id)
 
         if not info:
-            return None, "no torrent info returned by AllDebrid", None
+            return TorrentProbeResult(
+                status=TorrentProbeStatus.INVALID,
+                reason="no torrent info returned by AllDebrid",
+            )
 
         # Check if torrent is ready (statusCode 4 = Ready)
         # Status codes: 0=In Queue, 1=Downloading, 2=Compressing, 3=Uploading, 4=Ready
         if info.status != "Ready":
-            return None, f"Not instantly available (status={info.status})", info
+            return TorrentProbeResult(
+                status=TorrentProbeStatus.ACQUIRING,
+                reason=f"Not instantly available (status={info.status})",
+                info=info,
+            )
 
         # Get files from the magnet/files endpoint
         files_data = self._get_magnet_files(torrent_id)
 
         if not files_data:
-            return None, "no files present in the torrent", None
+            return TorrentProbeResult(
+                status=TorrentProbeStatus.INVALID,
+                reason="no files present in the torrent",
+                info=info,
+            )
 
         files = list[DebridFile]()
 
@@ -433,10 +441,17 @@ class AllDebridDownloader(DownloaderBase):
         self._extract_files_recursive(files_data, item_type, files, infohash)
 
         if not files:
-            return None, "no valid files after validation", None
+            return TorrentProbeResult(
+                status=TorrentProbeStatus.INVALID,
+                reason="no valid files after validation",
+                info=info,
+            )
 
-        # Return container WITH the TorrentInfo to avoid re-fetching in download phase
-        return TorrentContainer(infohash=infohash, files=files), None, info
+        return TorrentProbeResult(
+            status=TorrentProbeStatus.READY,
+            container=TorrentContainer(infohash=infohash, files=files),
+            info=info,
+        )
 
     def _add_link_to_files_recursive(
         self,

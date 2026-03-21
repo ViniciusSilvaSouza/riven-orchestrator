@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from program.orchestrator.debrid_manager import DebridManager
+from program.orchestrator.debrid_manager import DueTaskCandidate
 from program.orchestrator.models import (
     DebridCacheStatus,
     DebridResolutionTask,
@@ -233,6 +234,7 @@ def test_park_acquiring_task_persists_provider_torrent_state(monkeypatch):
         provider=None,
         provider_torrent_id=None,
         provider_torrent_status=None,
+        acquiring_started_at=None,
         available_at=None,
         locked_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
@@ -262,7 +264,47 @@ def test_park_acquiring_task_persists_provider_torrent_state(monkeypatch):
     assert task.provider == "realdebrid"
     assert task.provider_torrent_id == "rd-123"
     assert task.provider_torrent_status == "queued"
+    assert task.acquiring_started_at is not None
     assert task.locked_at is None
+
+
+def test_park_acquiring_task_preserves_existing_acquiring_started_at(monkeypatch):
+    manager = DebridManager()
+    started_at = datetime.utcnow() - timedelta(minutes=5)
+    task = Mock(
+        attempts=1,
+        max_attempts=3,
+        status=DebridTaskStatus.PROCESSING,
+        provider="realdebrid",
+        provider_torrent_id="rd-123",
+        provider_torrent_status="queued",
+        acquiring_started_at=started_at,
+        available_at=None,
+        locked_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        last_error=None,
+    )
+    session = FakeTaskSession(task)
+    debrid_manager_module = importlib.import_module("program.orchestrator.debrid_manager")
+
+    @contextmanager
+    def session_factory():
+        yield session
+
+    monkeypatch.setattr(debrid_manager_module, "db_session", session_factory)
+
+    manager._park_acquiring_task(
+        42,
+        provider="realdebrid",
+        torrent_id="rd-123",
+        provider_status="downloading",
+        delay=timedelta(minutes=1),
+        error="Waiting for provider acquisition on realdebrid (status=downloading)",
+    )
+
+    assert session.committed is True
+    assert task.acquiring_started_at == started_at
+    assert task.provider_torrent_status == "downloading"
 
 
 def test_recover_stranded_scraped_items_requeues_terminal_items(monkeypatch):
@@ -385,3 +427,22 @@ def test_probe_provider_caches_parallel_returns_acquiring_without_negative_cache
     assert cache_result is not None
     assert cache_result.is_acquiring is True
     assert saved == [("alldebrid", DebridCacheStatus.NOT_FOUND)]
+
+
+def test_build_provider_task_lanes_keeps_provider_affinity_for_pending_acquisition():
+    manager = DebridManager()
+    services = [Mock(key="realdebrid"), Mock(key="alldebrid")]
+    due_task = DueTaskCandidate(
+        task_id=99,
+        infohash="hash-jojo",
+        priority=DebridTaskPriority.NORMAL,
+        available_at=datetime.utcnow(),
+        provider="realdebrid",
+        provider_torrent_id="rd-123",
+        provider_torrent_status="downloading",
+        acquiring_started_at=datetime.utcnow() - timedelta(minutes=2),
+    )
+
+    lanes = manager._build_provider_task_lanes([due_task], services, limit=1)
+
+    assert lanes == {"realdebrid": [99]}

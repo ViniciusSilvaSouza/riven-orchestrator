@@ -49,6 +49,29 @@ def test_check_cache_returns_acquiring_when_provider_keeps_pending_torrent():
     assert result.container is pending_container
 
 
+def test_check_existing_torrent_returns_acquiring_for_provider_side_download():
+    downloader = Mock()
+    pending_container = Mock(files=[], torrent_id="rd-123", torrent_info=Mock(status="downloading"))
+    downloader.probe_torrent_on_service.return_value = pending_container
+
+    wrapper = ProviderResolveWrapper(downloader)
+    provider = Mock(key="realdebrid")
+    item = Mock(id=11, log_string="Episode B")
+    stream = Mock(infohash="hash-existing")
+
+    result = wrapper.check_existing_torrent(
+        provider,
+        "hash-existing",
+        item=item,
+        stream=stream,
+        torrent_id="rd-123",
+    )
+
+    assert result.status == ProviderResolveStatus.ACQUIRING
+    assert result.is_acquiring is True
+    assert result.container is pending_container
+
+
 def test_resolve_returns_resolved_when_provider_succeeds():
     downloader = Mock()
     container = Mock()

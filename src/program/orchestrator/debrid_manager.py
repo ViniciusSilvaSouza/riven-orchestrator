@@ -65,6 +65,10 @@ class DueTaskCandidate:
     infohash: str
     priority: DebridTaskPriority
     available_at: datetime
+    provider: str | None
+    provider_torrent_id: str | None
+    provider_torrent_status: str | None
+    acquiring_started_at: datetime | None
 
 
 class DebridManager:
@@ -869,6 +873,10 @@ class DebridManager:
                 infohash=task.infohash,
                 priority=task.priority,
                 available_at=task.available_at,
+                provider=task.provider,
+                provider_torrent_id=task.provider_torrent_id,
+                provider_torrent_status=task.provider_torrent_status,
+                acquiring_started_at=task.acquiring_started_at,
             )
             for task in due_tasks[:limit]
         ]
@@ -883,6 +891,19 @@ class DebridManager:
             return "unassigned"
         return ordered[0].key
 
+    def _preferred_provider_for_task(
+        self,
+        task: DueTaskCandidate,
+        services: list["DownloaderBase"],
+    ) -> str:
+        if (
+            task.provider
+            and task.provider_torrent_id
+            and any(service.key == task.provider for service in services)
+        ):
+            return task.provider
+        return self._preferred_provider_for_infohash(services, task.infohash)
+
     def _select_parallel_task_batch(
         self,
         due_tasks: list[DueTaskCandidate],
@@ -892,7 +913,7 @@ class DebridManager:
     ) -> list[int]:
         grouped = defaultdict(list)
         for task in due_tasks:
-            provider_key = self._preferred_provider_for_infohash(services, task.infohash)
+            provider_key = self._preferred_provider_for_task(task, services)
             grouped[provider_key].append(task.task_id)
 
         selected = list[int]()
@@ -931,7 +952,7 @@ class DebridManager:
             task = task_by_id.get(task_id)
             if task is None:
                 continue
-            provider_key = self._preferred_provider_for_infohash(services, task.infohash)
+            provider_key = self._preferred_provider_for_task(task, services)
             lanes[provider_key].append(task_id)
 
         return dict(lanes)
@@ -1005,6 +1026,11 @@ class DebridManager:
             stream_infohash = stream.infohash
             task_created_at = task.created_at
             task_provider_torrent_id = task.provider_torrent_id
+            task_provider = task.provider
+            task_acquiring_started_at = task.acquiring_started_at
+
+        if not provider_hint and task_provider_torrent_id and task_provider:
+            provider_hint = task_provider
 
         if provider_hint and task_provider_torrent_id:
             providers = self.select_providers(
@@ -1188,7 +1214,8 @@ class DebridManager:
             ):
                 provider_status = selected_cache.container.torrent_info.status
 
-            if datetime.utcnow() - task_created_at >= self._pending_acquire_max_wait:
+            acquiring_started_at = task_acquiring_started_at or task_created_at
+            if datetime.utcnow() - acquiring_started_at >= self._pending_acquire_max_wait:
                 self._cleanup_provider_torrent(
                     selected_service,
                     selected_cache.container.torrent_id
@@ -1447,6 +1474,7 @@ class DebridManager:
             if task is None:
                 return
 
+            now = datetime.utcnow()
             if task.attempts > 0:
                 task.attempts -= 1
 
@@ -1454,9 +1482,10 @@ class DebridManager:
             task.provider = provider
             task.provider_torrent_id = str(torrent_id)
             task.provider_torrent_status = provider_status
-            task.available_at = datetime.utcnow() + delay
+            task.acquiring_started_at = task.acquiring_started_at or now
+            task.available_at = now + delay
             task.locked_at = None
-            task.updated_at = datetime.utcnow()
+            task.updated_at = now
             task.last_error = error
             session.add(task)
             session.commit()
@@ -1474,6 +1503,7 @@ class DebridManager:
     def _clear_pending_provider_state(self, task: DebridResolutionTask) -> None:
         task.provider_torrent_id = None
         task.provider_torrent_status = None
+        task.acquiring_started_at = None
 
     def _cleanup_provider_torrent(
         self,
@@ -1781,6 +1811,8 @@ class DebridManager:
             DebridCacheStatus.NOT_FOUND.value: 0,
             DebridCacheStatus.ERROR.value: 0,
         }
+        acquiring_pending = 0
+        acquiring_by_status = defaultdict(int)
         next_task = None
 
         try:
@@ -1803,25 +1835,45 @@ class DebridManager:
                             DebridResolutionTask.status,
                             DebridResolutionTask.available_at,
                             DebridResolutionTask.id,
+                            DebridResolutionTask.provider,
+                            DebridResolutionTask.provider_torrent_id,
+                            DebridResolutionTask.provider_torrent_status,
+                            DebridResolutionTask.acquiring_started_at,
                         )
                     )
                     .all()
                 )
-                for status, available_at, task_id in queue_rows:
+                for (
+                    status,
+                    available_at,
+                    task_id,
+                    provider,
+                    provider_torrent_id,
+                    provider_torrent_status,
+                    acquiring_started_at,
+                ) in queue_rows:
                     queue_counts[status.value] = queue_counts.get(status.value, 0) + 1
-                    if (
-                        next_task is None
-                        or available_at < next_task["available_at"]
-                        or (
-                            available_at == next_task["available_at"]
-                            and task_id < next_task["id"]
-                        )
-                    ):
-                        next_task = {
-                            "id": task_id,
-                            "available_at": available_at,
-                            "status": status.value,
-                        }
+                    if status == DebridTaskStatus.PENDING and provider_torrent_id:
+                        acquiring_pending += 1
+                        acquiring_by_status[provider_torrent_status or "unknown"] += 1
+                    if status in (DebridTaskStatus.PENDING, DebridTaskStatus.PROCESSING):
+                        if (
+                            next_task is None
+                            or available_at < next_task["available_at"]
+                            or (
+                                available_at == next_task["available_at"]
+                                and task_id < next_task["id"]
+                            )
+                        ):
+                            next_task = {
+                                "id": task_id,
+                                "available_at": available_at,
+                                "status": status.value,
+                                "provider": provider,
+                                "provider_torrent_id": provider_torrent_id,
+                                "provider_torrent_status": provider_torrent_status,
+                                "acquiring_started_at": acquiring_started_at,
+                            }
         except Exception as exc:
             logger.debug(f"Failed to inspect orchestrator queue status: {exc}")
 
@@ -1883,11 +1935,21 @@ class DebridManager:
             },
             "queue": {
                 "counts": queue_counts,
+                "acquiring_pending": acquiring_pending,
+                "acquiring_by_status": dict(acquiring_by_status),
                 "next_task": (
                     {
                         "id": next_task["id"],
                         "available_at": next_task["available_at"].isoformat(),
                         "status": next_task["status"],
+                        "provider": next_task["provider"],
+                        "provider_torrent_id": next_task["provider_torrent_id"],
+                        "provider_torrent_status": next_task["provider_torrent_status"],
+                        "acquiring_started_at": (
+                            next_task["acquiring_started_at"].isoformat()
+                            if next_task["acquiring_started_at"]
+                            else None
+                        ),
                     }
                     if next_task
                     else None

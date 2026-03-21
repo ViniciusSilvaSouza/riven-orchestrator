@@ -1,4 +1,6 @@
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Any, Literal
 
 import regex
@@ -116,7 +118,7 @@ class DebridFile(BaseModel):
             else:
                  min_limit = 0
                  max_limit = float("inf")
-                 
+
             # Ensure safe values
             min_limit = min_limit if min_limit is not None and min_limit >= 0 else 0
             max_limit = max_limit if max_limit is not None and max_limit > 0 else float("inf")
@@ -215,6 +217,28 @@ class TorrentInfo(BaseModel):
         """Check if the torrent is cached"""
 
         return len(self.files) > 0
+
+
+class TorrentProbeStatus(str, Enum):
+    READY = "ready"
+    ACQUIRING = "acquiring"
+    INVALID = "invalid"
+
+
+@dataclass
+class TorrentProbeResult:
+    status: TorrentProbeStatus
+    container: "TorrentContainer | None" = None
+    reason: str | None = None
+    info: "TorrentInfo | None" = None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.status == TorrentProbeStatus.READY and self.container is not None
+
+    @property
+    def is_acquiring(self) -> bool:
+        return self.status == TorrentProbeStatus.ACQUIRING and self.info is not None
 
 
 class DownloadedTorrent(BaseModel):
