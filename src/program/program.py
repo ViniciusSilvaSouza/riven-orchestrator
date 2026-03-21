@@ -3,6 +3,7 @@ import linecache
 import os
 import threading
 import time
+from datetime import datetime, timedelta
 from queue import Empty
 from tracemalloc import Snapshot
 
@@ -340,43 +341,49 @@ class Program(threading.Thread):
                 existing_item = db_functions.get_item_by_id(event.item_id)
             else:
                 existing_item = None
+            try:
+                processed_event = process_event(
+                    event.emitted_by,
+                    existing_item,
+                    event.content_item,
+                    event.overrides,
+                )
 
-            processed_event = process_event(
-                event.emitted_by,
-                existing_item,
-                event.content_item,
-                event.overrides,
-            )
+                next_service = processed_event.service
+                items_to_submit = processed_event.related_media_items
 
-            next_service = processed_event.service
-            items_to_submit = processed_event.related_media_items
-
-            if items_to_submit:
-                for item_to_submit in items_to_submit:
-                    if not next_service:
-                        self.em.add_event_to_queue(
-                            Event(
-                                emitted_by="StateTransition", item_id=item_to_submit.id
+                if items_to_submit:
+                    for item_to_submit in items_to_submit:
+                        if not next_service:
+                            self.em.add_event_to_queue(
+                                Event(
+                                    emitted_by="StateTransition", item_id=item_to_submit.id
+                                )
                             )
-                        )
-                    else:
-                        # We are in the database, pass on id.
-                        if item_to_submit.id:
-                            event = Event(
-                                next_service,
-                                item_id=item_to_submit.id,
-                                overrides=processed_event.overrides,
-                            )
-                        # We are not, lets pass the MediaItem
                         else:
-                            event = Event(
-                                next_service,
-                                content_item=item_to_submit,
-                                overrides=processed_event.overrides,
-                            )
+                            # We are in the database, pass on id.
+                            if item_to_submit.id:
+                                next_event = Event(
+                                    next_service,
+                                    item_id=item_to_submit.id,
+                                    overrides=processed_event.overrides,
+                                )
+                            # We are not, lets pass the MediaItem
+                            else:
+                                next_event = Event(
+                                    next_service,
+                                    content_item=item_to_submit,
+                                    overrides=processed_event.overrides,
+                                )
 
-                        # Event will be added to running when job actually starts in submit_job
-                        self.em.submit_job(next_service, self, event)
+                            self.em.submit_job(next_service, self, next_event)
+            except Exception as exc:
+                logger.exception(
+                    f"Unhandled error while dispatching {event.log_message}: {exc}"
+                )
+                event.run_at = datetime.now() + timedelta(seconds=10)
+                self.em.add_event_to_queue(event, log_message=False)
+                time.sleep(0.1)
 
     def stop(self):
         if not self.initialized:

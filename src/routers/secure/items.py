@@ -890,6 +890,22 @@ async def remove_item(
             # 1. Cancel active jobs (EventManager cancels children too)
             di[Program].em.cancel_job(item.id)
 
+            item_id, related_ids = db_functions.get_item_ids(session, item.id)
+            item_ids_to_remove = {item_id, *related_ids}
+
+            tasks_deleted, provider_torrents_deleted = debrid_manager.cleanup_item_state(
+                item_ids_to_remove,
+                services.downloader.initialized_services,
+            )
+            if tasks_deleted or provider_torrents_deleted:
+                logger.debug(
+                    "Cleaned debrid state for item {} (tasks_deleted={}, provider_torrents_deleted={})".format(
+                        item.id,
+                        tasks_deleted,
+                        provider_torrents_deleted,
+                    )
+                )
+
             # 2. Gather all refresh paths before deletion (entry may appear at multiple VFS paths)
             refresh_paths = list[str]()
 

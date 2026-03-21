@@ -4,7 +4,7 @@ import json
 import threading
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from queue import Empty
 from threading import Lock
 from typing import TYPE_CHECKING
@@ -62,6 +62,169 @@ class EventManager:
         self._queued_events = list[Event]()
         self._running_events = list[Event]()
         self.mutex = Lock()
+
+    @staticmethod
+    def _normalize_identifier(value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    def _event_matches_identifiers(
+        self,
+        event: Event | None,
+        *,
+        item_ids: set[int] | None = None,
+        tmdb_id: str | None = None,
+        tvdb_id: str | None = None,
+        imdb_id: str | None = None,
+    ) -> bool:
+        if event is None:
+            return False
+
+        if item_ids:
+            if event.item_id in item_ids:
+                return True
+
+        content_item = event.content_item
+        if content_item is None:
+            return False
+
+        if item_ids and getattr(content_item, "id", None) in item_ids:
+            return True
+
+        if tmdb_id and self._normalize_identifier(getattr(content_item, "tmdb_id", None)) == tmdb_id:
+            return True
+
+        if tvdb_id and self._normalize_identifier(getattr(content_item, "tvdb_id", None)) == tvdb_id:
+            return True
+
+        if imdb_id and self._normalize_identifier(getattr(content_item, "imdb_id", None)) == imdb_id:
+            return True
+
+        return False
+
+    def _matching_future_exists(
+        self,
+        *,
+        item_ids: set[int] | None = None,
+        tmdb_id: str | None = None,
+        tvdb_id: str | None = None,
+        imdb_id: str | None = None,
+    ) -> bool:
+        return any(
+            self._event_matches_identifiers(
+                future_with_event.event,
+                item_ids=item_ids,
+                tmdb_id=tmdb_id,
+                tvdb_id=tvdb_id,
+                imdb_id=imdb_id,
+            )
+            for future_with_event in self._futures
+        )
+
+    def _remove_matching_events(
+        self,
+        queue: list[Event],
+        *,
+        item_ids: set[int] | None = None,
+        tmdb_id: str | None = None,
+        tvdb_id: str | None = None,
+        imdb_id: str | None = None,
+    ) -> None:
+        matching_events = [
+            event
+            for event in list(queue)
+            if self._event_matches_identifiers(
+                event,
+                item_ids=item_ids,
+                tmdb_id=tmdb_id,
+                tvdb_id=tvdb_id,
+                imdb_id=imdb_id,
+            )
+        ]
+
+        for event in matching_events:
+            if queue is self._queued_events:
+                self.remove_event_from_queue(event)
+            else:
+                self.remove_event_from_running(event)
+
+    def remove_media_from_queues(
+        self,
+        *,
+        item_ids: set[int] | None = None,
+        tmdb_id: str | None = None,
+        tvdb_id: str | None = None,
+        imdb_id: str | None = None,
+    ) -> None:
+        self._remove_matching_events(
+            self._queued_events,
+            item_ids=item_ids,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            imdb_id=imdb_id,
+        )
+        self._remove_matching_events(
+            self._running_events,
+            item_ids=item_ids,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            imdb_id=imdb_id,
+        )
+
+    def _prune_stale_content_events(self, content_item: MediaItem) -> int:
+        item_ids = {item_id for item_id in [getattr(content_item, "id", None)] if item_id}
+        tmdb_id = self._normalize_identifier(getattr(content_item, "tmdb_id", None))
+        tvdb_id = self._normalize_identifier(getattr(content_item, "tvdb_id", None))
+        imdb_id = self._normalize_identifier(getattr(content_item, "imdb_id", None))
+        if not (item_ids or tmdb_id or tvdb_id or imdb_id):
+            return 0
+
+        if self._matching_future_exists(
+            item_ids=item_ids or None,
+            tmdb_id=tmdb_id,
+            tvdb_id=tvdb_id,
+            imdb_id=imdb_id,
+        ):
+            return 0
+
+        if db_functions.item_exists_by_any_id(
+            item_id=getattr(content_item, "id", None),
+            tvdb_id=getattr(content_item, "tvdb_id", None),
+            tmdb_id=getattr(content_item, "tmdb_id", None),
+            imdb_id=getattr(content_item, "imdb_id", None),
+        ):
+            return 0
+
+        stale_cutoff = datetime.now() - timedelta(minutes=2)
+        stale_events = [
+            event
+            for event in list(self._queued_events) + list(self._running_events)
+            if self._event_matches_identifiers(
+                event,
+                item_ids=item_ids or None,
+                tmdb_id=tmdb_id,
+                tvdb_id=tvdb_id,
+                imdb_id=imdb_id,
+            )
+            and event.run_at <= stale_cutoff
+        ]
+
+        for event in stale_events:
+            if event in self._queued_events:
+                self.remove_event_from_queue(event)
+            if event in self._running_events:
+                self.remove_event_from_running(event)
+
+        if stale_events:
+            logger.warning(
+                "Pruned {} stale content-only event(s) for {}".format(
+                    len(stale_events),
+                    content_item.log_string,
+                )
+            )
+
+        return len(stale_events)
 
     def _find_or_create_executor(self, service_cls: Service) -> ThreadPoolExecutor:
         """
@@ -329,6 +492,9 @@ class EventManager:
             cancellation_event,
         )
 
+        if event:
+            self.add_event_to_running(event)
+
         future_with_event = FutureWithEvent(
             future=future,
             event=event,
@@ -358,36 +524,51 @@ class EventManager:
         with db_session() as session:
             item_id, related_ids = db_functions.get_item_ids(session, item_id)
             ids_to_cancel = set([item_id] + related_ids)
+            item = session.get(MediaItem, item_id)
+            tmdb_id = self._normalize_identifier(item.tmdb_id) if item else None
+            tvdb_id = self._normalize_identifier(item.tvdb_id) if item else None
+            imdb_id = self._normalize_identifier(item.imdb_id) if item else None
 
-            future_map = dict[int, list[FutureWithEvent]]()
+            matching_futures = [
+                future_with_event
+                for future_with_event in self._futures
+                if self._event_matches_identifiers(
+                    future_with_event.event,
+                    item_ids=ids_to_cancel,
+                    tmdb_id=tmdb_id,
+                    tvdb_id=tvdb_id,
+                    imdb_id=imdb_id,
+                )
+            ]
 
-            for future_with_event in self._futures:
-                if future_with_event.event and future_with_event.event.item_id:
-                    future_item_id = future_with_event.event.item_id
-                    future_map.setdefault(future_item_id, []).append(future_with_event)
+            self.remove_media_from_queues(
+                item_ids=ids_to_cancel,
+                tmdb_id=tmdb_id,
+                tvdb_id=tvdb_id,
+                imdb_id=imdb_id,
+            )
 
-            for fid in ids_to_cancel:
-                if fid in future_map:
-                    for future_with_event in future_map[fid]:
-                        self.remove_id_from_queues(fid)
+            for future_with_event in matching_futures:
+                if (
+                    not future_with_event.future.done()
+                    and not future_with_event.future.cancelled()
+                ):
+                    try:
+                        future_with_event.cancellation_event.set()
+                        future_with_event.future.cancel()
 
-                        if (
-                            not future_with_event.future.done()
-                            and not future_with_event.future.cancelled()
-                        ):
-                            try:
-                                future_with_event.cancellation_event.set()
-                                future_with_event.future.cancel()
-
-                                logger.debug(f"Canceled job for Item ID {fid}")
-                            except Exception as e:
-                                if not suppress_logs:
-                                    logger.error(
-                                        f"Error cancelling future for {fid}: {str(e)}"
-                                    )
-
-            for fid in ids_to_cancel:
-                self.remove_id_from_queues(fid)
+                        event = future_with_event.event
+                        if event and event.item_id:
+                            logger.debug(f"Canceled job for Item ID {event.item_id}")
+                        elif event and event.content_item:
+                            logger.debug(
+                                f"Canceled content job for {event.content_item.log_string}"
+                            )
+                    except Exception as e:
+                        if not suppress_logs:
+                            logger.error(
+                                f"Error cancelling future for identifiers {ids_to_cancel}: {str(e)}"
+                            )
 
     def next(self) -> Event:
         """
@@ -528,6 +709,8 @@ class EventManager:
             if (content_item := event.content_item) is None:
                 logger.debug("Event has neither item_id nor content_item; skipping.")
                 return False
+
+            self._prune_stale_content_events(content_item)
 
             # Single-pass checks: queued and running
             if self.item_exists_in_queue(

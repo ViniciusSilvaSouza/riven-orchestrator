@@ -1505,6 +1505,76 @@ class DebridManager:
         task.provider_torrent_status = None
         task.acquiring_started_at = None
 
+    def cleanup_item_state(
+        self,
+        item_ids: list[int] | set[int] | tuple[int, ...],
+        downloader_services: list["DownloaderBase"] | tuple["DownloaderBase", ...],
+    ) -> tuple[int, int]:
+        normalized_ids = sorted({int(item_id) for item_id in item_ids if item_id})
+        if not normalized_ids:
+            return (0, 0)
+
+        services_by_key = {service.key: service for service in downloader_services}
+        task_count = 0
+        torrents_to_delete = list[tuple[str, str]]()
+
+        with db_session() as session:
+            tasks = (
+                session.execute(
+                    select(DebridResolutionTask).where(
+                        DebridResolutionTask.item_id.in_(normalized_ids)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            if not tasks:
+                return (0, 0)
+
+            task_count = len(tasks)
+            provider_torrents = {
+                (task.provider, task.provider_torrent_id)
+                for task in tasks
+                if task.provider and task.provider_torrent_id
+            }
+
+            for provider, torrent_id in provider_torrents:
+                still_referenced = session.execute(
+                    select(DebridResolutionTask.id)
+                    .where(DebridResolutionTask.provider == provider)
+                    .where(DebridResolutionTask.provider_torrent_id == torrent_id)
+                    .where(~DebridResolutionTask.item_id.in_(normalized_ids))
+                    .limit(1)
+                ).scalar_one_or_none()
+
+                if still_referenced is None:
+                    torrents_to_delete.append((provider, torrent_id))
+
+            for task in tasks:
+                session.delete(task)
+
+            session.commit()
+
+        deleted_torrents = 0
+        for provider, torrent_id in torrents_to_delete:
+            service = services_by_key.get(provider)
+            if service is None:
+                logger.debug(
+                    f"Skipping provider torrent cleanup for {provider}:{torrent_id} because provider is not initialized"
+                )
+                continue
+
+            try:
+                service.delete_torrent(torrent_id)
+                deleted_torrents += 1
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to delete provider torrent {torrent_id} on {provider}: {exc}"
+                )
+
+        return (task_count, deleted_torrents)
+
     def _cleanup_provider_torrent(
         self,
         service: "DownloaderBase",
