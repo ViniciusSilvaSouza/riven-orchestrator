@@ -114,9 +114,6 @@ services:
       - ./container_data/jellyfin/config:/config
       - ./container_data/jellyfin/cache:/cache
       - ./container_data/mount:/mount:rslave
-    depends_on:
-      riven:
-        condition: service_healthy
     networks:
       - media
 

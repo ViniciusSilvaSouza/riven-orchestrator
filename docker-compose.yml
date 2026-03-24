@@ -69,9 +69,6 @@ services:
         volumes:
             - ${JELLYFIN_CONFIG_DIR:-./container_data/jellyfin_config}:/config
             - ${RIVEN_MOUNT_DIR:-./container_data/mount}:/mount:rslave,z
-        depends_on:
-            riven:
-                condition: service_healthy
 
 networks:
     default:
