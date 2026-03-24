@@ -90,6 +90,9 @@ class ProgramScheduler:
         scheduled_functions[self._process_orchestrator_queue] = {
             "interval": settings_manager.settings.downloaders.orchestrator.shared_queue_poll_seconds
         }
+        scheduled_functions[self._prune_orchestrator_history] = {
+            "interval": 60 * 60 * 6,
+        }
 
         for func, config in scheduled_functions.items():
             self.scheduler.add_job(
@@ -125,6 +128,17 @@ class ProgramScheduler:
 
         if processed:
             logger.info(f"Processed {processed} orchestrator queue task(s)")
+
+    def _prune_orchestrator_history(self) -> None:
+        if not settings_manager.settings.downloaders.orchestrator.enabled:
+            return
+
+        pruned = debrid_manager.prune_history()
+        if pruned["deleted_tasks"] or pruned["deleted_cache"]:
+            logger.info(
+                "Pruned orchestrator history: "
+                f"tasks={pruned['deleted_tasks']}, cache={pruned['deleted_cache']}"
+            )
 
     def _schedule_services(self) -> None:
         """Schedule each content service based on its update interval or webhook mode."""

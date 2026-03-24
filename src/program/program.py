@@ -49,6 +49,10 @@ class ProgramStartupError(RuntimeError):
     """Raised when the program cannot reach a runnable state."""
 
 
+class ProgramRuntimeError(RuntimeError):
+    """Raised when the program thread exits unexpectedly."""
+
+
 @dataclass
 class Services:
     overseerr: Overseerr
@@ -104,6 +108,8 @@ class Program(threading.Thread):
 
         self.initialized = False
         self.running = False
+        self.runtime_error: Exception | None = None
+        self._stop_requested = False
         self.services = None
         self.enable_trace = settings_manager.settings.tracemalloc
         self.em = EventManager()
@@ -229,9 +235,10 @@ class Program(threading.Thread):
 
         return errors
 
-    def get_runtime_status(self) -> dict[str, bool]:
+    def get_runtime_status(self) -> dict[str, object]:
         """Return a lightweight readiness snapshot for health checks and logs."""
 
+        worker_alive = self.is_alive()
         scheduler_running = bool(
             self.scheduler_manager.scheduler and self.scheduler_manager.scheduler.running
         )
@@ -242,21 +249,26 @@ class Program(threading.Thread):
             [
                 self.initialized,
                 self.running,
+                worker_alive,
                 database_ready,
                 services_initialized,
                 services_valid,
                 scheduler_running,
             ]
-        )
+        ) and self.runtime_error is None
 
         return {
             "ready": ready,
             "initialized": self.initialized,
             "running": self.running,
+            "worker_alive": worker_alive,
             "database_ready": database_ready,
             "services_initialized": services_initialized,
             "services_valid": services_valid,
             "scheduler_running": scheduler_running,
+            "runtime_error": (
+                str(self.runtime_error) if self.runtime_error is not None else None
+            ),
         }
 
     def start(self):
@@ -336,12 +348,21 @@ class Program(threading.Thread):
                 "ITEM", f"Total Items: {total_items} (With filesystem: {total_with_fs})"
             )
 
-        self.scheduler_manager.start()
-
-        super().start()
+        self.runtime_error = None
+        self._stop_requested = False
         self.running = True
-        logger.success("Riven is running!")
         self.initialized = True
+
+        try:
+            self.scheduler_manager.start()
+            super().start()
+        except Exception:
+            self.running = False
+            self.initialized = False
+            self.scheduler_manager.stop()
+            raise
+
+        logger.success("Riven is running!")
 
     def display_top_allocators(
         self,
@@ -393,72 +414,94 @@ class Program(threading.Thread):
             self.display_top_allocators(snapshot)
 
     def run(self):
-        while self.initialized:
-            if not self.is_valid:
-                time.sleep(1)
-                continue
+        self.runtime_error = None
 
-            try:
-                event = self.em.next()
+        try:
+            while self.initialized:
+                if not self.is_valid:
+                    time.sleep(1)
+                    continue
 
-                if self.enable_trace:
-                    self.dump_tracemalloc()
-            except Empty:
-                if self.enable_trace:
-                    self.dump_tracemalloc()
+                try:
+                    event = self.em.next()
 
-                time.sleep(0.1)
-                continue
+                    if self.enable_trace:
+                        self.dump_tracemalloc()
+                except Empty:
+                    if self.enable_trace:
+                        self.dump_tracemalloc()
 
-            if event.item_id:
-                existing_item = db_functions.get_item_by_id(event.item_id)
-            else:
-                existing_item = None
-            try:
-                processed_event = process_event(
-                    event.emitted_by,
-                    existing_item,
-                    event.content_item,
-                    event.overrides,
-                )
+                    time.sleep(0.1)
+                    continue
 
-                next_service = processed_event.service
-                items_to_submit = processed_event.related_media_items
+                if event.item_id:
+                    existing_item = db_functions.get_item_by_id(event.item_id)
+                else:
+                    existing_item = None
+                try:
+                    processed_event = process_event(
+                        event.emitted_by,
+                        existing_item,
+                        event.content_item,
+                        event.overrides,
+                    )
 
-                if items_to_submit:
-                    for item_to_submit in items_to_submit:
-                        if not next_service:
-                            self.em.add_event_to_queue(
-                                Event(
-                                    emitted_by="StateTransition", item_id=item_to_submit.id
+                    next_service = processed_event.service
+                    items_to_submit = processed_event.related_media_items
+
+                    if items_to_submit:
+                        for item_to_submit in items_to_submit:
+                            if not next_service:
+                                self.em.add_event_to_queue(
+                                    Event(
+                                        emitted_by="StateTransition",
+                                        item_id=item_to_submit.id,
+                                    )
                                 )
-                            )
-                        else:
-                            # We are in the database, pass on id.
-                            if item_to_submit.id:
-                                next_event = Event(
-                                    next_service,
-                                    item_id=item_to_submit.id,
-                                    overrides=processed_event.overrides,
-                                )
-                            # We are not, lets pass the MediaItem
                             else:
-                                next_event = Event(
-                                    next_service,
-                                    content_item=item_to_submit,
-                                    overrides=processed_event.overrides,
-                                )
+                                # We are in the database, pass on id.
+                                if item_to_submit.id:
+                                    next_event = Event(
+                                        next_service,
+                                        item_id=item_to_submit.id,
+                                        overrides=processed_event.overrides,
+                                    )
+                                # We are not, lets pass the MediaItem
+                                else:
+                                    next_event = Event(
+                                        next_service,
+                                        content_item=item_to_submit,
+                                        overrides=processed_event.overrides,
+                                    )
 
-                            self.em.submit_job(next_service, self, next_event)
-            except Exception as exc:
-                logger.exception(
-                    f"Unhandled error while dispatching {event.log_message}: {exc}"
-                )
-                event.run_at = datetime.now() + timedelta(seconds=10)
-                self.em.add_event_to_queue(event, log_message=False)
-                time.sleep(0.1)
+                                self.em.submit_job(next_service, self, next_event)
+                except Exception as exc:
+                    logger.exception(
+                        f"Unhandled error while dispatching {event.log_message}: {exc}"
+                    )
+                    event.run_at = datetime.now() + timedelta(seconds=10)
+                    self.em.add_event_to_queue(event, log_message=False)
+                    time.sleep(0.1)
+        except Exception as exc:
+            self.runtime_error = exc
+            logger.exception(f"Fatal error in program thread: {exc}")
+        finally:
+            self.running = False
+
+    def wait_until_stopped(self, *, poll_interval: float = 0.25) -> None:
+        while self.is_alive():
+            self.join(timeout=poll_interval)
+            if self.runtime_error is not None:
+                raise ProgramRuntimeError("Program thread failed.") from self.runtime_error
+
+        if self.runtime_error is not None:
+            raise ProgramRuntimeError("Program thread failed.") from self.runtime_error
+
+        if not self._stop_requested and self.initialized:
+            raise ProgramRuntimeError("Program thread stopped unexpectedly.")
 
     def stop(self):
+        self._stop_requested = True
         self.running = False
         self.initialized = False
 

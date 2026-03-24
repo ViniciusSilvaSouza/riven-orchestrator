@@ -1,8 +1,10 @@
+from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+import threading
 from types import SimpleNamespace
 
-from program.managers.event_manager import EventManager
+from program.managers.event_manager import EventManager, FutureWithEvent
 from program.types import Event
 
 
@@ -68,3 +70,25 @@ def test_cancel_job_removes_matching_content_only_event(monkeypatch):
     manager.cancel_job(42)
 
     assert manager._queued_events == []
+
+
+def test_get_event_updates_uses_filesystem_service_stage():
+    manager = EventManager()
+    future = Future()
+    future.set_result(None)
+
+    class FilesystemService:
+        pass
+
+    manager._futures.append(
+        FutureWithEvent(
+            future=future,
+            event=Event(emitted_by=FilesystemService(), item_id=77),
+            cancellation_event=threading.Event(),
+        )
+    )
+
+    updates = manager.get_event_updates()
+
+    assert updates["FilesystemService"] == [77]
+    assert "Symlinker" not in updates

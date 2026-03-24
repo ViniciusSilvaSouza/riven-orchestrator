@@ -32,15 +32,8 @@ jobs:
       - name: Install the project
         run: uv sync --group dev --frozen
 
-      - name: Ruff & Isort
-        run: |
-          uv run ruff check ./src
-          uv run isort --check-only ./src
-
-      - name: Type check
-        uses: jakebailey/pyright-action@v1
-        with:
-          pylance-version: latest-release
+      - name: Static validation
+        run: bash ./scripts/run_backend_static_checks.sh
 
       - name: Run tests
-        run: uv run pytest src
+        run: bash ./scripts/run_backend_battery.sh

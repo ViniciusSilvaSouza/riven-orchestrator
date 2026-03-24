@@ -2,6 +2,7 @@ import importlib
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from program.orchestrator.debrid_manager import DebridManager, DueTaskCandidate
@@ -33,6 +34,31 @@ class FakeSession:
 
     def commit(self):
         self.committed = True
+
+
+class FakePruneSession:
+    def __init__(self, rowcounts):
+        self.rowcounts = list(rowcounts)
+        self.committed = False
+
+    def execute(self, _query):
+        return SimpleNamespace(rowcount=self.rowcounts.pop(0))
+
+    def commit(self):
+        self.committed = True
+
+
+def _due_task(task_id: int, infohash: str, now: datetime) -> DueTaskCandidate:
+    return DueTaskCandidate(
+        task_id=task_id,
+        infohash=infohash,
+        priority=DebridTaskPriority.NORMAL,
+        available_at=now,
+        provider=None,
+        provider_torrent_id=None,
+        provider_torrent_status=None,
+        acquiring_started_at=None,
+    )
 
 
 def test_provider_rate_limiter_respects_threshold():
@@ -167,10 +193,10 @@ def test_parallel_batch_round_robin_by_provider(monkeypatch):
     services = [Mock(key="realdebrid"), Mock(key="alldebrid")]
     now = datetime.utcnow()
     due_tasks = [
-        DueTaskCandidate(task_id=1, infohash="h1", priority=DebridTaskPriority.NORMAL, available_at=now),
-        DueTaskCandidate(task_id=2, infohash="h2", priority=DebridTaskPriority.NORMAL, available_at=now),
-        DueTaskCandidate(task_id=3, infohash="h3", priority=DebridTaskPriority.NORMAL, available_at=now),
-        DueTaskCandidate(task_id=4, infohash="h4", priority=DebridTaskPriority.NORMAL, available_at=now),
+        _due_task(1, "h1", now),
+        _due_task(2, "h2", now),
+        _due_task(3, "h3", now),
+        _due_task(4, "h4", now),
     ]
 
     provider_map = {
@@ -259,7 +285,8 @@ def test_probe_provider_caches_parallel_returns_first_cached_provider(monkeypatc
     saved = []
 
     class FakeWrapper:
-        def check_cache(self, service, infohash, *, item, stream):
+        def check_cache(self, service, infohash, *, item, stream, allow_pending=False):
+            _ = allow_pending
             if service.key == "realdebrid":
                 time.sleep(0.05)
                 return ProviderCacheResult(
@@ -304,7 +331,8 @@ def test_probe_provider_caches_parallel_records_not_found_for_uncached(monkeypat
     saved = []
 
     class FakeWrapper:
-        def check_cache(self, service, infohash, *, item, stream):
+        def check_cache(self, service, infohash, *, item, stream, allow_pending=False):
+            _ = allow_pending
             return ProviderCacheResult(
                 infohash=infohash,
                 provider=service.key,
@@ -338,10 +366,10 @@ def test_build_provider_task_lanes_groups_tasks_per_provider(monkeypatch):
     services = [Mock(key="realdebrid"), Mock(key="alldebrid")]
     now = datetime.utcnow()
     due_tasks = [
-        DueTaskCandidate(task_id=1, infohash="h1", priority=DebridTaskPriority.NORMAL, available_at=now),
-        DueTaskCandidate(task_id=2, infohash="h2", priority=DebridTaskPriority.NORMAL, available_at=now),
-        DueTaskCandidate(task_id=3, infohash="h3", priority=DebridTaskPriority.NORMAL, available_at=now),
-        DueTaskCandidate(task_id=4, infohash="h4", priority=DebridTaskPriority.NORMAL, available_at=now),
+        _due_task(1, "h1", now),
+        _due_task(2, "h2", now),
+        _due_task(3, "h3", now),
+        _due_task(4, "h4", now),
     ]
     provider_map = {
         "h1": "realdebrid",
@@ -362,3 +390,23 @@ def test_build_provider_task_lanes_groups_tasks_per_provider(monkeypatch):
         "realdebrid": [1, 2],
         "alldebrid": [3, 4],
     }
+
+
+def test_prune_history_returns_deleted_counts(monkeypatch):
+    manager = DebridManager()
+    session = FakePruneSession([3, 5])
+    debrid_manager_module = importlib.import_module("program.orchestrator.debrid_manager")
+
+    @contextmanager
+    def session_factory():
+        yield session
+
+    monkeypatch.setattr(debrid_manager_module, "db_session", session_factory)
+
+    result = manager.prune_history()
+
+    assert result == {
+        "deleted_tasks": 3,
+        "deleted_cache": 5,
+    }
+    assert session.committed is True

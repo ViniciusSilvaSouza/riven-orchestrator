@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from program.db.db import db_session
 from program.orchestrator.models import (
@@ -89,6 +89,15 @@ class DebridManager:
         )
         self._pending_acquire_max_wait = timedelta(
             minutes=settings_manager.settings.downloaders.orchestrator.uncached_acquire_max_wait_minutes
+        )
+        self._terminal_task_retention = max(
+            timedelta(days=7),
+            self._pending_acquire_max_wait * 2,
+            self._negative_ttl * 8,
+        )
+        self._cache_retention = max(
+            timedelta(days=30),
+            self._negative_ttl * 48,
         )
         self._queue_backoff = timedelta(minutes=1)
         self._negative_reprobe_after = min(
@@ -841,6 +850,50 @@ class DebridManager:
         except Exception as exc:
             logger.error(f"Failed recovering stale orchestrator tasks: {exc}")
             return 0
+
+    def prune_history(self) -> dict[str, int]:
+        deleted_tasks = 0
+        deleted_cache = 0
+        now = datetime.utcnow()
+        terminal_cutoff = now - self._terminal_task_retention
+        cache_cutoff = now - self._cache_retention
+
+        try:
+            with db_session() as session:
+                task_result = session.execute(
+                    delete(DebridResolutionTask)
+                    .where(
+                        DebridResolutionTask.status.in_(
+                            [
+                                DebridTaskStatus.COMPLETED,
+                                DebridTaskStatus.FAILED,
+                                DebridTaskStatus.CANCELLED,
+                            ]
+                        )
+                    )
+                    .where(DebridResolutionTask.updated_at < terminal_cutoff)
+                )
+                deleted_tasks = int(task_result.rowcount or 0)
+
+                cache_result = session.execute(
+                    delete(DebridResolutionCache).where(
+                        DebridResolutionCache.last_checked < cache_cutoff
+                    )
+                )
+                deleted_cache = int(cache_result.rowcount or 0)
+
+                session.commit()
+        except Exception as exc:
+            logger.error(f"Failed pruning orchestrator history: {exc}")
+            return {
+                "deleted_tasks": 0,
+                "deleted_cache": 0,
+            }
+
+        return {
+            "deleted_tasks": deleted_tasks,
+            "deleted_cache": deleted_cache,
+        }
 
     def _get_due_tasks(self, session, *, limit: int) -> list[DueTaskCandidate]:
         now = datetime.utcnow()

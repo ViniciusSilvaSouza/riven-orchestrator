@@ -1,73 +1,47 @@
-﻿import json
+import json
 import os
-from pathlib import Path
 
-from program.settings.manager import SettingsManager
+import program.settings as settings_module
+from program.settings import SettingsManager
+from program.settings.models import get_version
 
-TEST_VERSION = "9.9.9"
-DATA_PATH = Path(os.curdir) / "data"
 
-# Sample old settings data
-old_settings_data = {
-    "version": "0.7.5",
-    "debug": True,
-    "log": True,
-    "force_refresh": False,
-    "map_metadata": True,
-    "tracemalloc": False,
-    "downloaders": {
-        # "movie_filesize_min": 200,
-        # "movie_filesize_max": -1,
-        # "episode_filesize_min": 40,
-        # "episode_filesize_max": -1,
-        "real_debrid": {
-            "enabled": False,
-            "api_key": "",
-            "proxy_enabled": False,
-            "proxy_url": "",
+def test_load_and_migrate_legacy_settings_file(tmp_path, monkeypatch):
+    settings_file = tmp_path / "settings.json"
+    legacy_settings = {
+        "version": "0.7.5",
+        "log_level": True,
+        "tracemalloc": False,
+        "downloaders": {
+            "real_debrid": {
+                "enabled": False,
+                "api_key": "",
+            },
+            "all_debrid": {
+                "enabled": True,
+                "api_key": "12345678",
+                "proxy_url": "https://no_proxy.com",
+            },
         },
-        "all_debrid": {
-            "enabled": True,
-            "api_key": "12345678",
-            "proxy_enabled": False,
-            "proxy_url": "https://no_proxy.com",
-        },
-    },
-}
+    }
+    settings_file.write_text(json.dumps(legacy_settings), encoding="utf-8")
+    monkeypatch.setattr(settings_module, "data_dir_path", tmp_path)
+    for key in list(os.environ):
+        if key == "API_KEY" or key.startswith("RIVEN_"):
+            monkeypatch.delenv(key, raising=False)
 
+    settings_manager = SettingsManager()
 
-def test_load_and_migrate_settings():
-    temp_settings_file = Path.joinpath(DATA_PATH, "settings.json")
-    version_file = Path.joinpath(DATA_PATH, "VERSION")
+    assert settings_manager.settings.log_level == "DEBUG"
+    assert settings_manager.settings.tracemalloc is False
+    assert settings_manager.settings.downloaders.real_debrid.enabled is False
+    assert settings_manager.settings.downloaders.all_debrid.enabled is True
+    assert settings_manager.settings.downloaders.all_debrid.api_key == "12345678"
+    assert not hasattr(settings_manager.settings.downloaders.all_debrid, "proxy_url")
+    assert str(settings_manager.settings.database.host) == (
+        "postgresql+psycopg2://postgres:postgres@localhost/riven"
+    )
+    assert settings_manager.settings.version == get_version()
 
-    try:
-        temp_settings_file.write_text(json.dumps(old_settings_data))
-        version_file.write_text("9.9.9")
-
-        import program.settings.models
-
-        program.settings.manager.data_dir_path = DATA_PATH
-        program.settings.models.version_file_path = version_file
-        settings_manager = SettingsManager()
-
-        assert settings_manager.settings.debug is True
-        assert settings_manager.settings.log is True
-        assert settings_manager.settings.force_refresh is False
-        assert settings_manager.settings.map_metadata is True
-        assert settings_manager.settings.tracemalloc is False
-        # assert settings_manager.settings.downloaders.movie_filesize_min == 200
-        assert settings_manager.settings.downloaders.real_debrid.enabled is False
-        assert settings_manager.settings.downloaders.all_debrid.enabled is True
-        assert settings_manager.settings.downloaders.all_debrid.api_key == "12345678"
-        assert (
-            settings_manager.settings.downloaders.all_debrid.proxy_url
-            == "https://no_proxy.com"
-        )
-        assert (
-            settings_manager.settings.database.host
-            == "postgresql+psycopg2://postgres:postgres@localhost/riven"
-        )
-        assert settings_manager.settings.version == TEST_VERSION
-    finally:
-        temp_settings_file.unlink()
-        version_file.unlink()
+    persisted_settings = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert persisted_settings["version"] == get_version()

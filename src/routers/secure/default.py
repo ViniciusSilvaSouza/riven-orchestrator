@@ -10,7 +10,7 @@ from loguru import logger
 from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy import Date, cast, func, select
 
-from program.apis import TraktAPI
+from program.apis.trakt_api import TraktAPI
 from program.db import db_functions
 from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show

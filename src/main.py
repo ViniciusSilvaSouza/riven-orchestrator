@@ -24,7 +24,7 @@ from scalar_fastapi import (
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from program.program import Program, ProgramStartupError, riven
+from program.program import Program, ProgramRuntimeError, ProgramStartupError, riven
 from program.settings.models import get_version
 from program.settings import settings_manager
 from program.utils.cli import handle_args
@@ -168,6 +168,7 @@ def signal_handler(_signum: int, _frame: FrameType | None):
     di[Program].stop()
     raise SystemExit(EXIT_OK)
 
+
 def main() -> int:
     args = handle_args()
     signal.signal(signal.SIGINT, signal_handler)
@@ -179,12 +180,16 @@ def main() -> int:
     try:
         with server.run_in_thread():
             di[Program].start()
-            di[Program].run()
+            di[Program].wait_until_stopped()
     except SystemExit as exc:
         exit_code = int(exc.code) if isinstance(exc.code, int) else EXIT_OK
     except ProgramStartupError as exc:
         logger.error(f"Startup failed: {exc}")
         logger.exception("Error while starting Riven")
+        exit_code = EXIT_RUNTIME_ERROR
+    except ProgramRuntimeError as exc:
+        logger.error(f"Runtime failed: {exc}")
+        logger.exception("Error while running Riven")
         exit_code = EXIT_RUNTIME_ERROR
     except Exception:
         logger.exception("Error in main thread")

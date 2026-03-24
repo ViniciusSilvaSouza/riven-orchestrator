@@ -1,14 +1,20 @@
+from typing import TYPE_CHECKING
+
 from kink import di
 
 from program.settings import settings_manager
 
-from .listrr_api import ListrrAPI
-from .mdblist_api import MdblistAPI
-from .overseerr_api import OverseerrAPI
-from .plex_api import PlexAPI
-from .tmdb_api import TMDBApi
-from .trakt_api import TraktAPI
-from .tvdb_api import TVDBApi
+if TYPE_CHECKING:
+    from .listrr_api import ListrrAPI
+    from .mdblist_api import MdblistAPI
+    from .overseerr_api import OverseerrAPI
+    from .plex_api import PlexAPI
+    from .tmdb_api import TMDBApi
+    from .trakt_api import TraktAPI
+    from .tvdb_api import TVDBApi
+
+
+__all__ = ["bootstrap_apis"]
 
 
 def bootstrap_apis():
@@ -22,18 +28,26 @@ def bootstrap_apis():
 
 
 def __setup_trakt():
+    from .trakt_api import TraktAPI
+
     di[TraktAPI] = TraktAPI(settings_manager.settings.content.trakt)
 
 
 def __setup_tmdb():
+    from .tmdb_api import TMDBApi
+
     di[TMDBApi] = TMDBApi()
 
 
 def __setup_tvdb():
+    from .tvdb_api import TVDBApi
+
     di[TVDBApi] = TVDBApi()
 
 
 def __setup_plex():
+    from .plex_api import PlexAPI
+
     if not settings_manager.settings.updaters.plex.enabled:
         return
 
@@ -44,6 +58,8 @@ def __setup_plex():
 
 
 def __setup_overseerr():
+    from .overseerr_api import OverseerrAPI
+
     if not settings_manager.settings.content.overseerr.enabled:
         return
 
@@ -54,6 +70,8 @@ def __setup_overseerr():
 
 
 def __setup_mdblist():
+    from .mdblist_api import MdblistAPI
+
     if not settings_manager.settings.content.mdblist.enabled:
         return
 
@@ -61,6 +79,8 @@ def __setup_mdblist():
 
 
 def __setup_listrr():
+    from .listrr_api import ListrrAPI
+
     if not settings_manager.settings.content.listrr.enabled:
         return
 
