@@ -2,10 +2,14 @@ name: Verify
 
 on:
   pull_request:
+    branches:
+      - main
 
 jobs:
-  lint:
+  backend-battery:
+    name: Backend Battery
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v5
 
@@ -22,12 +26,21 @@ jobs:
 
       - name: Install pre-requisites
         run: |
-          sudo apt update
-          sudo apt install libfuse3-dev
+          sudo apt-get update
+          sudo apt-get install -y libfuse3-dev pkg-config
 
       - name: Install the project
-        run: uv sync --locked --all-extras --dev
+        run: uv sync --group dev --frozen
 
-      - uses: jakebailey/pyright-action@v1
+      - name: Ruff & Isort
+        run: |
+          uv run ruff check ./src
+          uv run isort --check-only ./src
+
+      - name: Type check
+        uses: jakebailey/pyright-action@v1
         with:
           pylance-version: latest-release
+
+      - name: Run tests
+        run: uv run pytest src

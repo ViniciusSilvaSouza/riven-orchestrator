@@ -45,6 +45,10 @@ from program.db.db import (
 )
 
 
+class ProgramStartupError(RuntimeError):
+    """Raised when the program cannot reach a runnable state."""
+
+
 @dataclass
 class Services:
     overseerr: Overseerr
@@ -184,7 +188,12 @@ class Program(threading.Thread):
 
         return all(s.initialized for s in self.services.enabled_services)
 
-    def validate_database(self) -> bool:
+    @property
+    def is_ready(self) -> bool:
+        status = self.get_runtime_status()
+        return bool(status["ready"])
+
+    def validate_database(self, *, log_errors: bool = True) -> bool:
         """Validate that the database is accessible."""
 
         try:
@@ -192,8 +201,63 @@ class Program(threading.Thread):
                 session.execute(text("SELECT 1"))
                 return True
         except Exception:
-            logger.error("Database connection failed. Is the database running?")
+            if log_errors:
+                logger.error("Database connection failed. Is the database running?")
             return False
+
+    def get_startup_validation_errors(self) -> list[str]:
+        """Return blocking initialization errors for required runtime services."""
+
+        if not self.services:
+            return ["Services have not been initialized."]
+
+        errors = list[str]()
+
+        if not self.services.scraping.initialized:
+            errors.append("No Scraping service initialized, you must enable at least one.")
+
+        if not self.services.downloader.initialized:
+            errors.append(
+                "No Downloader service initialized, you must enable at least one."
+            )
+
+        if not self.services.filesystem.initialized:
+            errors.append("Filesystem service failed to initialize, check your settings.")
+
+        if not self.services.updater.initialized:
+            errors.append("No Updater service initialized, you must enable at least one.")
+
+        return errors
+
+    def get_runtime_status(self) -> dict[str, bool]:
+        """Return a lightweight readiness snapshot for health checks and logs."""
+
+        scheduler_running = bool(
+            self.scheduler_manager.scheduler and self.scheduler_manager.scheduler.running
+        )
+        database_ready = self.validate_database(log_errors=False)
+        services_initialized = self.services is not None
+        services_valid = self.is_valid if services_initialized else False
+        ready = all(
+            [
+                self.initialized,
+                self.running,
+                database_ready,
+                services_initialized,
+                services_valid,
+                scheduler_running,
+            ]
+        )
+
+        return {
+            "ready": ready,
+            "initialized": self.initialized,
+            "running": self.running,
+            "database_ready": database_ready,
+            "services_initialized": services_initialized,
+            "services_valid": services_valid,
+            "scheduler_running": scheduler_running,
+        }
 
     def start(self):
         """
@@ -222,12 +286,20 @@ class Program(threading.Thread):
             logger.log("PROGRAM", "Database not found, trying to create database")
             if not create_database_if_not_exists():
                 logger.error("Failed to create database, exiting")
-                return
+                raise ProgramStartupError("Failed to create database.")
             logger.success("Database created successfully")
 
         run_migrations()
 
         self.initialize_services()
+
+        startup_errors = self.get_startup_validation_errors()
+        if startup_errors:
+            for error in startup_errors:
+                logger.error(error)
+            raise ProgramStartupError(
+                "Required services failed to initialize during startup."
+            )
 
         with db_session() as session:
             from sqlalchemy import exists
@@ -267,6 +339,7 @@ class Program(threading.Thread):
         self.scheduler_manager.start()
 
         super().start()
+        self.running = True
         logger.success("Riven is running!")
         self.initialized = True
 
@@ -386,8 +459,8 @@ class Program(threading.Thread):
                 time.sleep(0.1)
 
     def stop(self):
-        if not self.initialized:
-            return
+        self.running = False
+        self.initialized = False
 
         self.scheduler_manager.stop()
 

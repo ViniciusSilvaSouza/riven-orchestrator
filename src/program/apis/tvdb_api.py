@@ -118,9 +118,8 @@ class TVDBApi:
             self.token = self._get_auth_token()
 
             if not self.token:
-                logger.error("Failed to obtain TVDB token, exiting.")
-
-                exit(0)
+                logger.error("Failed to obtain TVDB token during startup.")
+                raise TVDBApiError("Failed to obtain TVDB token.")
 
             logger.info("Successfully obtained new TVDB token")
 

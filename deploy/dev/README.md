@@ -6,7 +6,7 @@ This stack is meant for validating the fork locally before publishing an image.
 
 - local build of the current `Dockerfile`
 - Riven Backend + shared Postgres
-- Riven Frontend
+- optional Riven Frontend via `--profile frontend`
 - Jellyfin
 - Seerr
 - Prowlarr
@@ -40,25 +40,31 @@ The dev compose enables Zilean and Comet scraping by default, and Comet is alrea
 Build the local image:
 
 ```bash
-docker compose -f deploy/dev/docker-compose.local.yml build riven
+docker compose -f docker-compose.dev.yml build riven
 ```
 
 Start the stack:
 
 ```bash
-docker compose -f deploy/dev/docker-compose.local.yml up -d
+docker compose -f docker-compose.dev.yml up -d
+```
+
+Start the optional frontend too:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile frontend up -d
 ```
 
 Follow logs:
 
 ```bash
-docker compose -f deploy/dev/docker-compose.local.yml logs -f riven
+docker compose -f docker-compose.dev.yml logs -f riven
 ```
 
 Stop everything:
 
 ```bash
-docker compose -f deploy/dev/docker-compose.local.yml down
+docker compose -f docker-compose.dev.yml down
 ```
 
 ## URLs

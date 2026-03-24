@@ -3,17 +3,17 @@ name: riven-dev
 services:
   riven:
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile
     image: riven-orchestrator:dev-local
-    container_name: riven-backend
+    container_name: riven
     restart: unless-stopped
     tty: true
     shm_size: 1024m
     ports:
       - "8080:8080"
     env_file:
-      - ../../.env
+      - .env
     environment:
       API_KEY: 0123456789abcdef0123456789abcdef
       PUID: 1000
@@ -38,22 +38,25 @@ services:
     security_opt:
       - apparmor:unconfined
     volumes:
-      - ../../container_data/riven:/riven/data
-      - ../../container_data/mount:/mount:rshared
+      - ./container_data/riven:/riven/data
+      - ./container_data/mount:/mount:rshared
     depends_on:
       riven_postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- -T 3 http://127.0.0.1:8080/openapi.json >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/readyz >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
+      start_period: 20s
     networks:
       - media
 
   riven_frontend:
+    profiles:
+      - frontend
     build:
-      context: ../../../../riven-frontend
+      context: ../riven-frontend
       dockerfile: Dockerfile
     image: riven-frontend:dev-local
     container_name: riven-frontend
@@ -67,7 +70,7 @@ services:
       AUTH_SECRET: local-dev-riven-frontend-auth-secret
       ORIGIN: http://localhost:3000
     volumes:
-      - ../../container_data/riven_frontend:/riven/data
+      - ./container_data/riven_frontend:/riven/data
     depends_on:
       riven:
         condition: service_healthy
@@ -88,8 +91,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ../../container_data/db:/var/lib/postgresql/data
-      - ../shared/postgres-init/01-create-extra-databases.sh:/docker-entrypoint-initdb.d/01-create-extra-databases.sh:ro
+      - ./container_data/db:/var/lib/postgresql/data
+      - ./deploy/shared/postgres-init/01-create-extra-databases.sh:/docker-entrypoint-initdb.d/01-create-extra-databases.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d riven"]
       interval: 10s
@@ -108,12 +111,12 @@ services:
     environment:
       TZ: America/Sao_Paulo
     volumes:
-      - ../../container_data/jellyfin/config:/config
-      - ../../container_data/jellyfin/cache:/cache
-      - ../../container_data/mount:/mount:rslave
+      - ./container_data/jellyfin/config:/config
+      - ./container_data/jellyfin/cache:/cache
+      - ./container_data/mount:/mount:rslave
     depends_on:
       riven:
-        condition: service_started
+        condition: service_healthy
     networks:
       - media
 
@@ -139,7 +142,7 @@ services:
       SCRAPE_ZILEAN: both
       ZILEAN_URL: http://zilean:8181
     volumes:
-      - ../../container_data/comet:/app/data
+      - ./container_data/comet:/app/data
     depends_on:
       prowlarr:
         condition: service_started
@@ -166,7 +169,7 @@ services:
       LOG_LEVEL: info
       PORT: 5055
     volumes:
-      - ../../container_data/seerr:/app/config
+      - ./container_data/seerr:/app/config
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:5055/api/v1/status || exit 1"]
       start_period: 20s
@@ -187,7 +190,7 @@ services:
       PGID: 1000
       TZ: America/Sao_Paulo
     volumes:
-      - ../../container_data/prowlarr:/config
+      - ./container_data/prowlarr:/config
     networks:
       - media
 
@@ -204,7 +207,7 @@ services:
       Zilean__Dmm__MinimumReDownloadIntervalMinutes: "360"
       Zilean__Dmm__MaxFilteredResults: "100"
     volumes:
-      - ../../container_data/zilean:/app/data
+      - ./container_data/zilean:/app/data
     depends_on:
       riven_postgres:
         condition: service_healthy

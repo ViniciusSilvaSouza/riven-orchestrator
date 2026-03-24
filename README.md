@@ -122,6 +122,10 @@ In short:
 
 ## Self Hosted
 
+For local validation and integration testing before promoting changes, use
+[`docker-compose.dev.yml`](docker-compose.dev.yml). The production-oriented stack
+remains [`docker-compose.yml`](docker-compose.yml).
+
 ### Installation
 
 1) Find a good place on your hard drive we can call mount from now on. For the sake of things I will call it /path/to/riven/mount.

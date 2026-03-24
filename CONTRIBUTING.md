@@ -7,6 +7,7 @@ possible.
 
 1. **Open an Issue**: For major changes, start by opening an issue to discuss your proposed modifications. This helps us understand your intentions and provide feedback early in the process.
 2. **Pull Requests**: Once your changes are ready, submit a pull request. Ensure your code adheres to our coding standards and passes all tests. Commits should follow [conventional-commits](https://www.conventionalcommits.org/) specification.
+3. **Branch Protection**: Configure `main` to require the GitHub Actions check named `Backend Battery` before merge. This is the repository's canonical PR gate for lint, type-checking, and backend tests.
 
 ### Code Formatting
 

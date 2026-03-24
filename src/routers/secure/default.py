@@ -37,7 +37,7 @@ def get_size(size_bytes: float, suffix: str = "B") -> str | None:
 
 @router.get("/health", operation_id="health")
 async def health() -> MessageResponse:
-    return MessageResponse(message=str(di[Program].initialized))
+    return MessageResponse(message=str(di[Program].is_ready))
 
 
 class DownloaderUserInfo(BaseModel):
