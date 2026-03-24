@@ -79,6 +79,31 @@ class FakeTaskSession:
         self.committed = True
 
 
+class FakeStaleProcessingSession:
+    def __init__(self, stale_tasks):
+        self.stale_tasks = stale_tasks
+        self.added = []
+        self.committed = False
+
+    def execute(self, _query):
+        session = self
+
+        class _Result:
+            def scalars(self_inner):
+                return self_inner
+
+            def all(self_inner):
+                return session.stale_tasks
+
+        return _Result()
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    def commit(self):
+        self.committed = True
+
+
 class FakeRecoveryScanSession:
     def __init__(self, candidates, *, has_open_tasks=False, latest_task=None):
         self.candidates = candidates
@@ -223,6 +248,37 @@ def test_requeue_without_consuming_attempt_restores_attempt_budget(monkeypatch):
     assert task.attempts == 0
     assert task.locked_at is None
     assert task.last_error == "No providers available for task"
+
+
+def test_recover_stale_processing_tasks_after_restart_requeues_worker_state(monkeypatch):
+    manager = DebridManager()
+    manager._processing_stale_after = timedelta(seconds=30)
+    task = Mock(
+        status=DebridTaskStatus.PROCESSING,
+        available_at=datetime.utcnow() - timedelta(minutes=5),
+        locked_at=datetime.utcnow() - timedelta(minutes=5),
+        updated_at=datetime.utcnow() - timedelta(minutes=5),
+        last_error=None,
+    )
+    session = FakeStaleProcessingSession([task])
+    debrid_manager_module = importlib.import_module("program.orchestrator.debrid_manager")
+
+    @contextmanager
+    def session_factory():
+        yield session
+
+    monkeypatch.setattr(debrid_manager_module, "db_session", session_factory)
+
+    recovered = manager._recover_stale_processing_tasks()
+
+    assert recovered == 1
+    assert session.committed is True
+    assert session.added == [task]
+    assert task.status == DebridTaskStatus.PENDING
+    assert task.locked_at is None
+    assert task.last_error == "Recovered stale processing task after interrupted worker"
+    assert isinstance(task.available_at, datetime)
+    assert isinstance(task.updated_at, datetime)
 
 
 def test_park_acquiring_task_persists_provider_torrent_state(monkeypatch):

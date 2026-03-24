@@ -80,10 +80,11 @@ def get_item_by_external_id(
     imdb_id: str | None = None,
     tvdb_id: str | None = None,
     tmdb_id: str | None = None,
+    item_types: list[str] | None = None,
     session: Session | None = None,
 ) -> "MediaItem | None":
     """
-    Retrieve a movie or show by one of its external identifiers.
+    Retrieve a media item by one of its external identifiers.
 
     If a matching show is returned, its seasons and episodes are also loaded. At least one of `imdb_id`, `tvdb_id`, or `tmdb_id` must be provided.
 
@@ -92,8 +93,11 @@ def get_item_by_external_id(
         tvdb_id (str | None): TVDB identifier to match.
         tmdb_id (str | None): TMDB identifier to match.
 
+    Parameters:
+        item_types (list[str] | None): Optional item types to restrict the lookup. Defaults to `["movie", "show"]`.
+
     Returns:
-        MediaItem: The matched movie or show, or `None` if no match is found.
+        MediaItem: The matched item, or `None` if no match is found.
 
     Raises:
         ValueError: If none of `imdb_id`, `tvdb_id`, or `tmdb_id` are provided.
@@ -103,22 +107,23 @@ def get_item_by_external_id(
     conditions = list[Any]()
 
     if imdb_id:
-        conditions.append(MediaItem.imdb_id == imdb_id)
+        conditions.append(MediaItem.imdb_id == str(imdb_id))
 
     if tvdb_id:
-        conditions.append(MediaItem.tvdb_id == tvdb_id)
+        conditions.append(MediaItem.tvdb_id == str(tvdb_id))
 
     if tmdb_id:
-        conditions.append(MediaItem.tmdb_id == tmdb_id)
+        conditions.append(MediaItem.tmdb_id == str(tmdb_id))
 
     if not conditions:
         raise ValueError("At least one external ID must be provided")
 
     with _maybe_session(session) as (_s, _owns):
+        allowed_types = item_types or ["movie", "show"]
         query = (
             select(MediaItem)
             .options(selectinload(Show.seasons).selectinload(Season.episodes))
-            .where(MediaItem.type.in_(["movie", "show"]))
+            .where(MediaItem.type.in_(allowed_types))
             .where(or_(*conditions))
         )
 
@@ -347,6 +352,25 @@ def run_thread_with_db_item(
 
     from program.media.item import Episode, Season
 
+    def _copy_placeholder_context(source: "MediaItem", target: "MediaItem") -> None:
+        """Preserve request metadata when replacing a placeholder mediaitem."""
+
+        for attr in (
+            "requested_at",
+            "requested_by",
+            "requested_id",
+            "requested_seasons",
+            "overseerr_id",
+            "updated",
+            "guid",
+            "aliases",
+            "is_anime",
+            "active_stream",
+        ):
+            value = getattr(source, attr, None)
+            if value is not None:
+                setattr(target, attr, value)
+
     if event:
         with db_session() as session:
             if event.item_id:
@@ -405,9 +429,44 @@ def run_thread_with_db_item(
                     )
 
                 indexed_item = runner_result.media_items[0]
+                existing_item = None
 
-                # Idempotent insert: skip if any known ID already exists
-                if item_exists_by_any_id(
+                if any(
+                    (
+                        indexed_item.imdb_id,
+                        indexed_item.tvdb_id,
+                        indexed_item.tmdb_id,
+                    )
+                ):
+                    existing_item = get_item_by_external_id(
+                        imdb_id=indexed_item.imdb_id,
+                        tvdb_id=indexed_item.tvdb_id,
+                        tmdb_id=indexed_item.tmdb_id,
+                        item_types=["movie", "show", "mediaitem"],
+                        session=session,
+                    )
+
+                if existing_item is not None:
+                    existing_item = session.merge(existing_item)
+
+                    if (
+                        existing_item.type == "mediaitem"
+                        and indexed_item.type != "mediaitem"
+                    ):
+                        replacement_id = existing_item.id
+                        _copy_placeholder_context(existing_item, indexed_item)
+                        session.delete(existing_item)
+                        session.flush()
+                        indexed_item.id = replacement_id
+                    else:
+                        logger.debug(
+                            "Indexed item already exists as a persisted {} with id={}, skipping save".format(
+                                existing_item.type,
+                                existing_item.id,
+                            )
+                        )
+                        return existing_item.id
+                elif item_exists_by_any_id(
                     item_id=indexed_item.id,
                     tvdb_id=indexed_item.tvdb_id,
                     tmdb_id=indexed_item.tmdb_id,

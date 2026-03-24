@@ -1,9 +1,15 @@
+import threading
+from contextlib import contextmanager
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from program.apis.overseerr_api import OverseerrAPI
-from program.media.item import Episode, Movie, Season, Show
+from program.core.runner import RunnerResult
+from program.db import db_functions
+from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.services.content.overseerr import Overseerr
+from program.types import Event
 
 
 def _build_show(
@@ -110,3 +116,121 @@ def test_sync_availability_marks_show_available_once_requested_scope_is_complete
 
     assert synced is True
     api.update_media_status.assert_called_once_with(202, "available")
+
+
+class FakeContentIndexSession:
+    def __init__(self, existing_item):
+        self.existing_item = existing_item
+        self.added = []
+        self.deleted = []
+        self.flushed = False
+        self.committed = False
+        self.rolled_back = False
+
+    def merge(self, item):
+        return item
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    def delete(self, obj):
+        self.deleted.append(obj)
+
+    def flush(self):
+        self.flushed = True
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+
+class FakeLookupSession:
+    def __init__(self):
+        self.params = None
+
+    def execute(self, query):
+        self.params = query.compile().params
+
+        class _Result:
+            def unique(self_inner):
+                return self_inner
+
+            def scalar_one_or_none(self_inner):
+                return None
+
+        return _Result()
+
+
+def test_get_item_by_external_id_normalizes_numeric_ids_to_strings():
+    session = FakeLookupSession()
+
+    result = db_functions.get_item_by_external_id(tmdb_id=329865, session=session)
+
+    assert result is None
+    assert session.params["tmdb_id_1"] == "329865"
+
+
+def test_run_thread_with_db_item_upgrades_placeholder_mediaitem(monkeypatch):
+    placeholder = MediaItem(
+        {
+            "tmdb_id": "157336",
+            "requested_by": "overseerr",
+            "requested_id": 8,
+            "requested_at": datetime(2026, 3, 24, 1, 37, 19),
+            "requested_seasons": None,
+            "overseerr_id": 9,
+        }
+    )
+    placeholder.id = 599
+    placeholder.type = "mediaitem"
+
+    indexed_movie = Movie(
+        {
+            "title": "Interestelar",
+            "tmdb_id": "157336",
+            "imdb_id": "tt0816692",
+        }
+    )
+
+    session = FakeContentIndexSession(placeholder)
+
+    @contextmanager
+    def session_factory():
+        yield session
+
+    def fake_indexer(_item):
+        yield RunnerResult(media_items=[indexed_movie])
+
+    monkeypatch.setattr(db_functions, "db_session", session_factory)
+    lookup = {}
+
+    def fake_get_item_by_external_id(**kwargs):
+        lookup.update(kwargs)
+        return placeholder
+
+    monkeypatch.setattr(
+        db_functions,
+        "get_item_by_external_id",
+        fake_get_item_by_external_id,
+    )
+
+    result = db_functions.run_thread_with_db_item(
+        fake_indexer,
+        Overseerr.__new__(Overseerr),
+        SimpleNamespace(),
+        Event(emitted_by="Overseerr", content_item=placeholder),
+        threading.Event(),
+    )
+
+    assert result == 599
+    assert session.deleted == [placeholder]
+    assert session.flushed is True
+    assert session.added == [indexed_movie]
+    assert indexed_movie.id == 599
+    assert lookup["item_types"] == ["movie", "show", "mediaitem"]
+    assert indexed_movie.requested_by == "overseerr"
+    assert indexed_movie.requested_id == 8
+    assert indexed_movie.overseerr_id == 9
+    assert session.committed is True

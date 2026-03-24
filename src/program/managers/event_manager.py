@@ -741,13 +741,22 @@ class EventManager:
         Args:
             item (MediaItem): The item to add to the queue as an event.
         """
+        existing_item = None
 
-        if not db_functions.item_exists_by_any_id(
-            item.id,
-            item.tvdb_id,
-            item.tmdb_id,
-            item.imdb_id,
-        ):
+        if item.imdb_id or item.tvdb_id or item.tmdb_id:
+            existing_item = db_functions.get_item_by_external_id(
+                imdb_id=item.imdb_id,
+                tvdb_id=item.tvdb_id,
+                tmdb_id=item.tmdb_id,
+                item_types=["movie", "show", "mediaitem"],
+            )
+
+        if existing_item is None and item.id:
+            existing_item = db_functions.get_item_by_id(item.id)
+
+        # Allow placeholder mediaitems to re-enter the queue so they can be
+        # promoted by the indexer into concrete movie/show records.
+        if existing_item is None or existing_item.type == "mediaitem":
             if self.add_event(
                 Event(
                     service or "Manual",

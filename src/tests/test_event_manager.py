@@ -5,6 +5,7 @@ import threading
 from types import SimpleNamespace
 
 from program.managers.event_manager import EventManager, FutureWithEvent
+from program.media.item import MediaItem
 from program.types import Event
 
 
@@ -92,3 +93,29 @@ def test_get_event_updates_uses_filesystem_service_stage():
 
     assert updates["FilesystemService"] == [77]
     assert "Symlinker" not in updates
+
+
+def test_add_item_requeues_existing_placeholder_for_indexing(monkeypatch):
+    manager = EventManager()
+    placeholder = MediaItem({"tmdb_id": "329865"})
+    placeholder.id = 600
+    placeholder.type = "mediaitem"
+
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.get_item_by_external_id",
+        lambda **kwargs: placeholder,
+    )
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.get_item_by_id",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.item_exists_by_any_id",
+        lambda *args, **kwargs: False,
+    )
+
+    added = manager.add_item(placeholder, service="Overseerr")
+
+    assert added is True
+    assert len(manager._queued_events) == 1
+    assert manager._queued_events[0].content_item is placeholder
