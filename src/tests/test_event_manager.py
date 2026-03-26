@@ -211,3 +211,46 @@ def test_add_event_skips_same_stage_when_item_is_running(monkeypatch):
 
     assert added is False
     assert manager._queued_events == []
+
+
+def test_process_future_allows_same_stage_requeue(monkeypatch):
+    manager = EventManager()
+    original_event = Event(emitted_by="Scraping", item_id=777)
+    manager.add_event_to_running(original_event)
+
+    class FakeSession:
+        pass
+
+    @contextmanager
+    def fake_db_session():
+        yield FakeSession()
+
+    monkeypatch.setattr("program.managers.event_manager.db_session", fake_db_session)
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.get_item_ids",
+        lambda *_args, **_kwargs: (777, []),
+    )
+    monkeypatch.setattr(
+        manager,
+        "add_event_to_queue",
+        lambda event: manager._queued_events.append(event),
+    )
+
+    future = Future()
+    future.set_result(777)
+    future_with_event = FutureWithEvent(
+        future=future,
+        event=original_event,
+        cancellation_event=threading.Event(),
+    )
+    manager._futures.append(future_with_event)
+
+    class Scraping:
+        pass
+
+    manager._process_future(future_with_event, Scraping())
+
+    assert len(manager._queued_events) == 1
+    assert manager._queued_events[0].item_id == 777
+    assert manager._stage_key(manager._queued_events[0].emitted_by) == "Scraping"
+    assert manager._running_events == []

@@ -267,6 +267,8 @@ class EventManager:
             service (type): The service class associated with the future.
         """
 
+        removed_running_event = False
+
         try:
             if future_with_event.future.cancelled():
                 if future_with_event.event:
@@ -296,6 +298,12 @@ class EventManager:
                     )
                     return  # finally still runs
 
+                if future_with_event.event:
+                    # Remove from running before enqueuing follow-up work so same-stage
+                    # retries are not incorrectly deduped as "already running".
+                    self.remove_event_from_running(future_with_event.event)
+                    removed_running_event = True
+
                 # Propagate overrides to the new event to maintain setting context across service transitions
                 event_overrides = future_with_event.event.overrides if future_with_event.event else None
 
@@ -322,7 +330,7 @@ class EventManager:
             if future_with_event in self._futures:
                 self._futures.remove(future_with_event)
 
-            if future_with_event.event:
+            if future_with_event.event and not removed_running_event:
                 self.remove_event_from_running(future_with_event.event)
                 logger.debug(
                     f"Removed {future_with_event.event.log_message} from running events."
