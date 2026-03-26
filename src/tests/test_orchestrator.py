@@ -264,6 +264,56 @@ def test_record_provider_exception_keeps_provider_available_for_content_mismatch
     assert "content_mismatch" in managed.last_error
 
 
+def test_record_provider_exception_keeps_provider_available_for_transient_unknown():
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+    manager.sync_services([service])
+
+    manager.record_provider_exception("realdebrid", RuntimeError())
+    managed = manager._registry.get("realdebrid")
+
+    assert managed is not None
+    assert managed.health == ProviderHealthState.HEALTHY
+    assert managed.cooldown_until is None
+    assert managed.last_error is not None
+    assert "transient_unknown" in managed.last_error
+    assert "RuntimeError" in managed.last_error
+
+
+def test_record_provider_exception_keeps_provider_available_for_transient_error():
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+    manager.sync_services([service])
+
+    manager.record_provider_exception("realdebrid", RuntimeError("unexpected parse failure"))
+    managed = manager._registry.get("realdebrid")
+
+    assert managed is not None
+    assert managed.health == ProviderHealthState.HEALTHY
+    assert managed.cooldown_until is None
+    assert managed.last_error is not None
+    assert "transient_error" in managed.last_error
+    assert "unexpected parse failure" in managed.last_error
+
+
+def test_record_provider_exception_marks_down_for_connection_refused():
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+    manager.sync_services([service])
+
+    manager.record_provider_exception(
+        "realdebrid",
+        ConnectionError("connection refused by remote host"),
+    )
+    managed = manager._registry.get("realdebrid")
+
+    assert managed is not None
+    assert managed.health == ProviderHealthState.DOWN
+    assert managed.cooldown_until is not None
+    assert managed.last_error is not None
+    assert "provider_down" in managed.last_error
+
+
 def test_status_snapshot_exposes_metrics_and_last_error():
     manager = DebridManager()
     service = Mock(key="realdebrid")

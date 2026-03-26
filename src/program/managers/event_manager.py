@@ -665,6 +665,14 @@ class EventManager:
 
         return any(event.item_id == _id for event in self._running_events)
 
+    def _stage_key(self, emitted_by: object) -> str:
+        """Return a stable stage key for event deduping across queued/running events."""
+
+        if isinstance(emitted_by, str):
+            return emitted_by
+
+        return emitted_by.__class__.__name__
+
     def add_event(self, event: Event) -> bool:
         """
         Adds an event to the queue if it is not already present in the queue or running events.
@@ -691,9 +699,27 @@ class EventManager:
                 logger.debug(f"Item ID {item_id} is already in the queue, skipping.")
                 return False
 
-            if self._id_in_running_events(item_id):
-                logger.debug(f"Item ID {item_id} is already running, skipping.")
-                return False
+            running_event = next(
+                (running for running in self._running_events if running.item_id == item_id),
+                None,
+            )
+            if running_event is not None:
+                running_stage = self._stage_key(running_event.emitted_by)
+                requested_stage = self._stage_key(event.emitted_by)
+
+                if running_stage == requested_stage:
+                    logger.debug(
+                        f"Item ID {item_id} is already running for stage {requested_stage}, skipping."
+                    )
+                    return False
+
+                logger.debug(
+                    "Item ID {} is currently running for stage {}; queueing follow-up stage {}".format(
+                        item_id,
+                        running_stage,
+                        requested_stage,
+                    )
+                )
 
             for related_id in related_ids:
                 if self._id_in_queue(related_id) or self._id_in_running_events(

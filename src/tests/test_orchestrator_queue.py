@@ -436,6 +436,80 @@ def test_recover_stranded_scraped_items_requeues_terminal_items(monkeypatch):
     ]
 
 
+def test_recover_stranded_scraped_items_requeues_immediately_after_rescrape(monkeypatch):
+    manager = DebridManager()
+    manager._stranded_recovery_delay = timedelta(minutes=30)
+    debrid_manager_module = importlib.import_module("program.orchestrator.debrid_manager")
+
+    now = datetime.utcnow()
+    item = Mock(
+        id=778,
+        type="season",
+        last_state=States.Scraped,
+        scraped_at=now,
+        available_in_vfs=False,
+        media_entry=None,
+        streams=[Mock(infohash="hash-2", raw_title="Two")],
+        log_string="JoJo S03",
+    )
+    latest_task = Mock(
+        status=DebridTaskStatus.FAILED,
+        updated_at=now - timedelta(minutes=1),
+    )
+    scan_session = FakeRecoveryScanSession([item], latest_task=latest_task)
+    load_session = FakeRecoveryLoadSession()
+    sessions = [scan_session, load_session]
+    queued = []
+
+    @contextmanager
+    def session_factory():
+        yield sessions.pop(0)
+
+    monkeypatch.setattr(debrid_manager_module, "db_session", session_factory)
+    monkeypatch.setattr(debrid_manager_module, "select", lambda *_args, **_kwargs: FakeQuery())
+
+    media_item_module = types.ModuleType("program.media.item")
+    media_item_module.MediaItem = type(
+        "MediaItem",
+        (),
+        {
+            "last_state": FakeColumn(),
+            "type": FakeColumn(),
+            "scraped_at": FakeColumn(),
+            "id": FakeColumn(),
+        },
+    )
+    monkeypatch.setitem(sys.modules, "program.media.item", media_item_module)
+
+    db_package = importlib.import_module("program.db")
+    db_functions_module = types.ModuleType("program.db.db_functions")
+    db_functions_module.get_item_by_id = (
+        lambda item_id, **_kwargs: item if item_id == 778 else None
+    )
+    monkeypatch.setitem(sys.modules, "program.db.db_functions", db_functions_module)
+    monkeypatch.setattr(db_package, "db_functions", db_functions_module, raising=False)
+    monkeypatch.setattr(
+        manager,
+        "enqueue_resolution_tasks",
+        lambda queued_item, **kwargs: queued.append((queued_item.id, kwargs)) or 1,
+    )
+
+    recovered = manager._recover_stranded_scraped_items(limit=3)
+
+    assert recovered == 1
+    assert queued == [
+        (
+            778,
+            {
+                "trigger": DebridTaskTrigger.RETRY,
+                "priority": DebridTaskPriority.NORMAL,
+                "max_attempts": 3,
+                "max_streams": 3,
+            },
+        )
+    ]
+
+
 def test_probe_provider_caches_parallel_returns_acquiring_without_negative_cache(monkeypatch):
     manager = DebridManager()
     service_a = Mock(key="realdebrid")

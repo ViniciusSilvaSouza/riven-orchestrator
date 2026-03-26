@@ -578,6 +578,15 @@ class Downloader(Runner[None, DownloaderBase]):
 
         if isinstance(item, (Show, Season, Episode)):
             season_number = file_data.seasons[0] if file_data.seasons else None
+            # Some anime packs omit explicit season markers (Sxx) and only include
+            # per-season episode numbers. When processing a Season/Episode request,
+            # prefer that item's season context before falling back to absolute
+            # episode mapping across the entire show.
+            if season_number is None:
+                if isinstance(item, Season):
+                    season_number = item.number
+                elif isinstance(item, Episode):
+                    season_number = item.parent.number
 
             for file_episode in file_data.episodes:
                 if episode_cap and file_episode > episode_cap:

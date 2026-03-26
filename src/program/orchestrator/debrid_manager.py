@@ -779,7 +779,18 @@ class DebridManager:
                         ):
                             continue
 
-                        if latest_task.updated_at > now - self._stranded_recovery_delay:
+                        # If the item was scraped again after the last terminal queue task,
+                        # recover immediately instead of waiting for stranded_recovery_delay.
+                        scraped_after_latest_terminal = bool(
+                            item.scraped_at
+                            and latest_task.updated_at
+                            and item.scraped_at > latest_task.updated_at
+                        )
+
+                        if (
+                            not scraped_after_latest_terminal
+                            and latest_task.updated_at > now - self._stranded_recovery_delay
+                        ):
                             continue
 
                     candidate_ids.append(item.id)
@@ -1213,7 +1224,7 @@ class DebridManager:
                     task_infohash, selected_service.key, DebridCacheStatus.ERROR
                 )
                 self.record_provider_exception(selected_service.key, exc)
-                probe_error = str(exc)
+                probe_error = self._format_exception(exc)
                 selected_service = None
                 selected_cache = None
         else:
@@ -1398,6 +1409,7 @@ class DebridManager:
                 )
                 return True
         except ProviderNoMatchingFilesError as exc:
+            error_summary = self._format_exception(exc)
             self.save_resolution(
                 task_infohash, selected_service.key, DebridCacheStatus.ERROR
             )
@@ -1409,21 +1421,22 @@ class DebridManager:
                         session,
                         task,
                         status=DebridTaskStatus.FAILED,
-                        error=str(exc),
+                        error=error_summary,
                     )
                     session.commit()
             logger.debug(
-                f"Queued resolution failed for {task_infohash} on {selected_service.key}: {exc}"
+                f"Queued resolution failed for {task_infohash} on {selected_service.key}: {error_summary}"
             )
             return False
         except Exception as exc:
+            error_summary = self._format_exception(exc)
             self.save_resolution(
                 task_infohash, selected_service.key, DebridCacheStatus.ERROR
             )
             self.record_provider_exception(selected_service.key, exc)
-            last_error = str(exc)
+            last_error = error_summary
             logger.debug(
-                f"Queued resolution failed for {task_infohash} on {selected_service.key}: {exc}"
+                f"Queued resolution failed for {task_infohash} on {selected_service.key}: {error_summary}"
             )
 
         self._requeue_task(
@@ -1498,7 +1511,7 @@ class DebridManager:
                 except Exception as exc:
                     self.save_resolution(infohash, service.key, DebridCacheStatus.ERROR)
                     self.record_provider_exception(service.key, exc)
-                    last_error = str(exc)
+                    last_error = self._format_exception(exc)
 
         if acquiring_results:
             for service in services:
@@ -1782,45 +1795,79 @@ class DebridManager:
 
     def _classify_provider_exception(self, exc: Exception) -> tuple[bool, int, str]:
         orchestrator_settings = settings_manager.settings.downloaders.orchestrator
-        error_text = str(exc).lower()
+        error_text = str(exc).strip().lower()
+        repr_text = repr(exc).lower()
+        combined_text = f"{error_text} {repr_text}".strip()
         exc_name = exc.__class__.__name__.lower()
 
         if isinstance(exc, ProviderNoMatchingFilesError) or exc_name == "nomatchingfilesexception":
             return (False, 0, "content_mismatch")
 
-        if "429" in error_text or "rate limit" in error_text or "circuitbreakeropen" in exc_name:
+        if "429" in combined_text or "rate limit" in combined_text or "circuitbreakeropen" in exc_name:
             return (
                 True,
                 orchestrator_settings.cooldown_minutes_rate_limited,
                 "rate_limited",
             )
 
-        if "timeout" in error_text or "timeout" in exc_name:
+        if "timeout" in combined_text or "timeout" in exc_name:
             return (
                 False,
                 orchestrator_settings.cooldown_minutes_timeout,
                 "timeout",
             )
 
-        return (False, orchestrator_settings.cooldown_minutes_down, "provider_down")
+        provider_down_markers = (
+            "connection refused",
+            "connection reset",
+            "connection aborted",
+            "max retries exceeded",
+            "name resolution",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "host unreachable",
+            "network is unreachable",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+        if any(marker in combined_text for marker in provider_down_markers):
+            return (False, orchestrator_settings.cooldown_minutes_down, "provider_down")
+
+        if not error_text:
+            return (False, 0, "transient_unknown")
+
+        return (False, 0, "transient_error")
+
+    def _format_exception(self, exc: Exception) -> str:
+        error_text = str(exc).strip()
+        if error_text:
+            return f"{exc.__class__.__name__}: {error_text}"
+        return f"{exc.__class__.__name__}: {repr(exc)}"
 
     def record_provider_exception(self, provider: str, exc: Exception) -> None:
         rate_limited, cooldown_minutes, classification = self._classify_provider_exception(exc)
+        error_summary = self._format_exception(exc)
         logger.warning(
             "Provider error classified: "
-            f"provider={provider}, class={classification}, cooldown={cooldown_minutes}m, error={exc}"
+            f"provider={provider}, class={classification}, cooldown={cooldown_minutes}m, error={error_summary}"
         )
-        if classification == "content_mismatch":
+        if classification in {"content_mismatch", "transient_unknown", "transient_error"}:
             self.mark_provider_content_mismatch(
                 provider,
-                reason=f"{classification}: {exc}",
+                reason=f"{classification}: {error_summary}",
             )
             return
         self.mark_provider_error(
             provider,
             rate_limited=rate_limited,
             cooldown_minutes=cooldown_minutes,
-            reason=f"{classification}: {exc}",
+            reason=f"{classification}: {error_summary}",
         )
 
     def mark_provider_content_mismatch(

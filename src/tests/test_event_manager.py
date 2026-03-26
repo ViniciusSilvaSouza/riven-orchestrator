@@ -153,3 +153,61 @@ def test_add_item_requeues_existing_overseerr_show_by_item_id(monkeypatch):
     assert len(manager._queued_events) == 1
     assert manager._queued_events[0].item_id == 401
     assert manager._queued_events[0].content_item is None
+
+
+def test_add_event_allows_followup_stage_when_item_is_running(monkeypatch):
+    manager = EventManager()
+    manager.add_event_to_running(Event(emitted_by="Scraping", item_id=404))
+
+    class FakeSession:
+        pass
+
+    @contextmanager
+    def fake_db_session():
+        yield FakeSession()
+
+    monkeypatch.setattr("program.managers.event_manager.db_session", fake_db_session)
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.get_item_ids",
+        lambda *_args, **_kwargs: (404, []),
+    )
+    monkeypatch.setattr(
+        manager,
+        "add_event_to_queue",
+        lambda event: manager._queued_events.append(event),
+    )
+
+    added = manager.add_event(Event(emitted_by="Downloader", item_id=404))
+
+    assert added is True
+    assert len(manager._queued_events) == 1
+    assert manager._queued_events[0].item_id == 404
+    assert manager._queued_events[0].emitted_by == "Downloader"
+
+
+def test_add_event_skips_same_stage_when_item_is_running(monkeypatch):
+    manager = EventManager()
+    manager.add_event_to_running(Event(emitted_by="Scraping", item_id=404))
+
+    class FakeSession:
+        pass
+
+    @contextmanager
+    def fake_db_session():
+        yield FakeSession()
+
+    monkeypatch.setattr("program.managers.event_manager.db_session", fake_db_session)
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.get_item_ids",
+        lambda *_args, **_kwargs: (404, []),
+    )
+    monkeypatch.setattr(
+        manager,
+        "add_event_to_queue",
+        lambda event: manager._queued_events.append(event),
+    )
+
+    added = manager.add_event(Event(emitted_by="Scraping", item_id=404))
+
+    assert added is False
+    assert manager._queued_events == []

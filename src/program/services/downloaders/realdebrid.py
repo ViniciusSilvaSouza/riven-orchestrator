@@ -271,11 +271,11 @@ class RealDebridDownloader(DownloaderBase):
 
                 return None
 
-            # Success - cache torrent_id AND info in container to avoid re-adding/re-fetching during download
-            # This eliminates 2 API calls per stream (add_torrent + get_torrent_info in download phase)
-            if container:
-                container.torrent_id = torrent_id
-                container.torrent_info = info
+            # Success - cache torrent_id AND info in container to avoid re-adding/re-fetching during download.
+            # This eliminates 2 API calls per stream (add_torrent + get_torrent_info in download phase).
+            if probe_result.container is not None:
+                probe_result.container.torrent_id = torrent_id
+                probe_result.container.torrent_info = probe_result.info
 
             return probe_result.container
 
