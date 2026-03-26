@@ -194,7 +194,7 @@ class Overseerr(Runner[OverseerrModel]):
                     existing_item.requested_by = incoming_item.requested_by
                     changed = True
 
-                if incoming_item.requested_id and existing_item.requested_id != incoming_item.requested_id:
+                if incoming_item.requested_id and not existing_item.requested_id:
                     existing_item.requested_id = incoming_item.requested_id
                     changed = True
 

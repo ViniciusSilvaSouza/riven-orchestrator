@@ -295,13 +295,71 @@ class OverseerrAPI:
                 completed_unlinked_count,
             )
 
+        deduped_requests = self._dedupe_requests_by_media(actionable_requests)
+
+        if len(deduped_requests) < len(actionable_requests):
+            logger.info(
+                "Collapsed {} duplicate Seerr request(s) by media id",
+                len(actionable_requests) - len(deduped_requests),
+            )
+
         media_items = [
             media_item
-            for item in actionable_requests
+            for item in deduped_requests
             if (media_item := self.build_media_item(service_key, item)) is not None
         ]
 
         return media_items
+
+    @classmethod
+    def _request_dedupe_key(cls, request: dict[str, Any]) -> tuple[str, str, str, str, str]:
+        media = request.get("media") or {}
+        media_type = str(media.get("mediaType") or request.get("type") or "")
+        media_id = str(media.get("id") or "")
+        tmdb_id = str(media.get("tmdbId") or "")
+        tvdb_id = str(media.get("tvdbId") or "")
+        imdb_id = str(media.get("imdbId") or "")
+        return (media_type, media_id, tmdb_id, tvdb_id, imdb_id)
+
+    @classmethod
+    def _dedupe_requests_by_media(
+        cls,
+        requests: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        deduped = dict[tuple[str, str, str, str, str], dict[str, Any]]()
+
+        for request in requests:
+            key = cls._request_dedupe_key(request)
+            existing = deduped.get(key)
+
+            if not existing:
+                copied = dict(request)
+                copied["requestedSeasons"] = cls._extract_requested_seasons(request)
+                deduped[key] = copied
+                continue
+
+            merged_requested_seasons = cls._normalize_requested_seasons(
+                (existing.get("requestedSeasons") or [])
+                + (cls._extract_requested_seasons(request) or [])
+            )
+
+            if merged_requested_seasons:
+                existing["requestedSeasons"] = merged_requested_seasons
+
+            existing_request_id = cls._coerce_optional_int(existing.get("id"))
+            candidate_request_id = cls._coerce_optional_int(request.get("id"))
+
+            if existing_request_id is None and candidate_request_id is not None:
+                existing["id"] = candidate_request_id
+            elif (
+                existing_request_id is not None
+                and candidate_request_id is not None
+                and candidate_request_id < existing_request_id
+            ):
+                # Keep the lowest request id as a stable canonical reference.
+                existing["id"] = candidate_request_id
+
+        return list(deduped.values())
 
     def get_request_details(self, request_id: int) -> dict[str, Any] | None:
         """Fetch a single request payload from Seerr/Overseerr."""
@@ -335,6 +393,53 @@ class OverseerrAPI:
             logger.error(f"Failed to delete request from Overseerr: {str(e)}")
 
             return False
+
+    def get_requests_for_media(
+        self,
+        media_id: int,
+        *,
+        take: int = 10000,
+    ) -> list[dict[str, Any]]:
+        """Fetch all Seerr requests that reference a specific media id."""
+
+        try:
+            response = self.session.get(f"api/v1/request?take={take}&sort=added")
+
+            if not response.ok:
+                logger.warning(
+                    "Failed to list Seerr requests for media {}: {}",
+                    media_id,
+                    response.data,
+                )
+                return []
+
+            results = (response.json() or {}).get("results") or []
+
+            return [
+                item
+                for item in results
+                if (item.get("media") or {}).get("id") == media_id
+            ]
+        except Exception as e:
+            logger.error("Failed to list Seerr requests for media {}: {}", media_id, e)
+            return []
+
+    def delete_requests_for_media(self, media_id: int) -> int:
+        """Delete every Seerr request tied to the given media id."""
+
+        requests = self.get_requests_for_media(media_id)
+        deleted = 0
+
+        for request in requests:
+            request_id = self._coerce_optional_int(request.get("id"))
+
+            if request_id is None:
+                continue
+
+            if self.delete_request(request_id):
+                deleted += 1
+
+        return deleted
 
     def update_media_status(
         self,

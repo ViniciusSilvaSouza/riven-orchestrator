@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from program.managers.event_manager import EventManager, FutureWithEvent
 from program.media.item import MediaItem
+from program.media.state import States
 from program.types import Event
 
 
@@ -119,3 +120,36 @@ def test_add_item_requeues_existing_placeholder_for_indexing(monkeypatch):
     assert added is True
     assert len(manager._queued_events) == 1
     assert manager._queued_events[0].content_item is placeholder
+
+
+def test_add_item_requeues_existing_overseerr_show_by_item_id(monkeypatch):
+    manager = EventManager()
+    existing_show = MediaItem({"tmdb_id": "45790"})
+    existing_show.id = 401
+    existing_show.type = "show"
+    existing_show.last_state = States.Indexed
+
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.get_item_by_external_id",
+        lambda **kwargs: existing_show,
+    )
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.get_item_by_id",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "program.managers.event_manager.db_functions.get_item_ids",
+        lambda *_args, **_kwargs: (401, []),
+    )
+    monkeypatch.setattr(
+        manager,
+        "add_event_to_queue",
+        lambda event: manager._queued_events.append(event),
+    )
+
+    added = manager.add_item(existing_show, service="Overseerr")
+
+    assert added is True
+    assert len(manager._queued_events) == 1
+    assert manager._queued_events[0].item_id == 401
+    assert manager._queued_events[0].content_item is None

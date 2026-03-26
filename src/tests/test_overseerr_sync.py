@@ -234,3 +234,69 @@ def test_run_thread_with_db_item_upgrades_placeholder_mediaitem(monkeypatch):
     assert indexed_movie.requested_id == 8
     assert indexed_movie.overseerr_id == 9
     assert session.committed is True
+
+
+def test_get_media_requests_dedupes_same_media_and_merges_requested_seasons():
+    api = OverseerrAPI(api_key="x", base_url="http://seerr.local")
+    payload = {
+        "results": [
+            {
+                "id": 11,
+                "status": OverseerrAPI.REQUEST_APPROVED,
+                "media": {
+                    "id": 6,
+                    "mediaType": "tv",
+                    "tmdbId": 45790,
+                    "tvdbId": 262954,
+                    "status": OverseerrAPI.MEDIA_PROCESSING,
+                },
+                "seasons": [{"seasonNumber": 1}, {"seasonNumber": 2}],
+            },
+            {
+                "id": 9,
+                "status": OverseerrAPI.REQUEST_APPROVED,
+                "media": {
+                    "id": 6,
+                    "mediaType": "tv",
+                    "tmdbId": 45790,
+                    "tvdbId": 262954,
+                    "status": OverseerrAPI.MEDIA_PROCESSING,
+                },
+                "seasons": [{"seasonNumber": 3}, {"seasonNumber": 6}],
+            },
+        ]
+    }
+
+    api.session.get = Mock(
+        return_value=SimpleNamespace(
+            ok=True,
+            json=lambda: payload,
+        )
+    )
+
+    media_items = api.get_media_requests("overseerr", filter="all")
+
+    assert len(media_items) == 1
+    item = media_items[0]
+    assert item.tvdb_id == 262954
+    assert item.requested_id == 9
+    assert item.overseerr_id == 6
+    assert item.requested_seasons == [1, 2, 3, 6]
+
+
+def test_delete_requests_for_media_deletes_all_matching_request_ids():
+    api = OverseerrAPI(api_key="x", base_url="http://seerr.local")
+    api.get_requests_for_media = Mock(
+        return_value=[
+            {"id": 7},
+            {"id": "9"},
+            {"id": None},
+        ]
+    )
+    api.delete_request = Mock(side_effect=[True, True])
+
+    deleted = api.delete_requests_for_media(6)
+
+    assert deleted == 2
+    api.delete_request.assert_any_call(7)
+    api.delete_request.assert_any_call(9)

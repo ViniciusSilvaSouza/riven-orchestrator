@@ -766,6 +766,32 @@ class EventManager:
                 logger.debug(f"Added item with {item.log_string} to the queue.")
                 return True
 
+        if (
+            service == "Overseerr"
+            and existing_item is not None
+            and existing_item.type in ("movie", "show")
+            and existing_item.last_state
+            not in (
+                States.Completed,
+                States.Failed,
+                States.Paused,
+                States.Unreleased,
+            )
+        ):
+            if self.add_event(
+                Event(
+                    service,
+                    item_id=existing_item.id,
+                    item_state=existing_item.state,
+                )
+            ):
+                logger.debug(
+                    "Requeued existing Overseerr item {} in state {}",
+                    existing_item.log_string,
+                    existing_item.state,
+                )
+                return True
+
         return False
 
     def get_event_updates(self) -> dict[str, list[int]]:
