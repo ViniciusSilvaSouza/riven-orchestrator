@@ -7,6 +7,7 @@ from kink.errors.service_error import ServiceError
 from program.media.item import Episode, Movie, Season, Show
 from program.media.state import States
 from program.program import Program
+from program.settings import settings_manager
 from program.state_transition import process_event
 
 
@@ -116,6 +117,57 @@ def test_process_event_allows_scraping_emitted_retry_when_due(services):
 
     assert processed_event.service is services.scraping
     assert list(processed_event.related_media_items) == [movie]
+
+
+def test_process_event_falls_back_to_episodes_when_season_scrape_stalls(services):
+    season = Season({"number": 2})
+    season.last_state = States.Indexed
+    season.scraped_times = 2
+
+    episode_one = Episode({"number": 1})
+    episode_two = Episode({"number": 2})
+    episode_one.last_state = States.Indexed
+    episode_two.last_state = States.Indexed
+    season.add_episode(episode_one)
+    season.add_episode(episode_two)
+
+    services.scraping.submit_by_type["season"] = False
+    services.scraping.submit_by_type["episode"] = True
+
+    original_fallback = settings_manager.settings.scraping.season_episode_fallback_attempts
+    settings_manager.settings.scraping.season_episode_fallback_attempts = 2
+
+    try:
+        processed_event = process_event("Manual", existing_item=season)
+    finally:
+        settings_manager.settings.scraping.season_episode_fallback_attempts = original_fallback
+
+    assert processed_event.service is services.scraping
+    assert list(processed_event.related_media_items) == [episode_one, episode_two]
+
+
+def test_process_event_keeps_season_strategy_before_fallback_threshold(services):
+    season = Season({"number": 2})
+    season.last_state = States.Indexed
+    season.scraped_times = 1
+
+    episode = Episode({"number": 1})
+    episode.last_state = States.Indexed
+    season.add_episode(episode)
+
+    services.scraping.submit_by_type["season"] = False
+    services.scraping.submit_by_type["episode"] = True
+
+    original_fallback = settings_manager.settings.scraping.season_episode_fallback_attempts
+    settings_manager.settings.scraping.season_episode_fallback_attempts = 2
+
+    try:
+        processed_event = process_event("Manual", existing_item=season)
+    finally:
+        settings_manager.settings.scraping.season_episode_fallback_attempts = original_fallback
+
+    assert processed_event.service is services.scraping
+    assert list(processed_event.related_media_items) == []
 
 
 @pytest.mark.parametrize(

@@ -257,7 +257,7 @@ def retry_library(session: Session | None = None) -> Sequence[int]:
                         ]
                     )
                 )
-                .where(MediaItem.type.in_(["movie", "show"]))
+                .where(MediaItem.type.in_(["movie", "show", "season", "episode"]))
                 .order_by(MediaItem.requested_at.desc())
             )
             .scalars()

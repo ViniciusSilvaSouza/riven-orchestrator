@@ -931,6 +931,15 @@ class ScraperModel(Observable):
         le=10,
         description="Maximum failed scrape attempts before giving up",
     )
+    season_episode_fallback_attempts: int = Field(
+        default=2,
+        ge=0,
+        le=20,
+        description=(
+            "After this many failed season-level scrape attempts, allow fallback "
+            "to episode-level scraping (0 disables fallback)"
+        ),
+    )
     dubbed_anime_only: bool = Field(
         default=False, description="Only scrape dubbed anime content"
     )
@@ -1117,9 +1126,9 @@ class AppModel(Observable):
         description="Enable detailed stream request/response logging",
     )
     retry_interval: int = Field(
-        default=60 * 60 * 24,
+        default=5 * 60,
         ge=0,
-        description="Interval in seconds to retry failed library items (24 hours default, 0 to disable)",
+        description="Interval in seconds to retry incomplete library items (5 minutes default, 0 to disable)",
     )
     metadata: MetadataLocalizationModel = Field(
         default_factory=lambda: MetadataLocalizationModel(),

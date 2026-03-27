@@ -5,6 +5,7 @@ from loguru import logger
 from program.media import MediaItem, States
 from program.types import ProcessedEvent, Service
 from program.media.item import Season, Show
+from program.settings import settings_manager
 
 
 def process_event(
@@ -108,6 +109,36 @@ def process_event(
             # here would prevent season-pack matching.
             if services.scraping.should_submit(existing_item):
                 items_to_submit = [existing_item]
+            else:
+                fallback_attempts = (
+                    settings_manager.settings.scraping.season_episode_fallback_attempts
+                )
+                if (
+                    fallback_attempts > 0
+                    and existing_item.scraped_times >= fallback_attempts
+                ):
+                    # If season-pack scraping keeps missing, gradually fall back
+                    # to episode-level work so large seasons do not stall forever.
+                    items_to_submit = [
+                        e
+                        for e in existing_item.episodes
+                        if e.last_state in [States.Indexed, States.PartiallyCompleted, States.Unknown]
+                        and services.scraping.should_submit(e)
+                    ]
+                    if items_to_submit:
+                        season_ref = (
+                            f"Season {existing_item.number}"
+                            if isinstance(existing_item, Season)
+                            else f"Item {existing_item.id}"
+                        )
+                        logger.debug(
+                            "Season {} reached fallback threshold ({} attempts); "
+                            "submitting {} episode(s) for scrape".format(
+                                season_ref,
+                                existing_item.scraped_times,
+                                len(items_to_submit),
+                            )
+                        )
 
     elif existing_item and existing_item.last_state == States.Scraped:
         next_service = services.downloader

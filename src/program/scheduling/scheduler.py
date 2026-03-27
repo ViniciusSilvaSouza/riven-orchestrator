@@ -188,6 +188,7 @@ class ProgramScheduler:
                 replace_existing=True,
                 next_run_time=datetime.now(),
                 coalesce=False,
+                misfire_grace_time=30,
             )
 
             logger.debug(
