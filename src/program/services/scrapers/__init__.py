@@ -19,11 +19,18 @@ from program.services.scrapers.mediafusion import Mediafusion
 from program.services.scrapers.orionoid import Orionoid
 from program.services.scrapers.prowlarr import Prowlarr
 from program.services.scrapers.rarbg import Rarbg
-from program.services.scrapers.shared import parse_results
+from program.services.scrapers.shared import ParseDiagnostics, parse_results
 from program.services.scrapers.torrentio import Torrentio
 from program.services.scrapers.zilean import Zilean
 from program.settings import settings_manager
 from program.settings.models import Observable, ScraperModel
+
+
+def _log_scraper(message: str) -> None:
+    try:
+        logger.log("SCRAPER", message)
+    except ValueError:
+        logger.info(message)
 
 
 class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
@@ -51,6 +58,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         self.initialized_services = [
             service for service in self.services.values() if service.initialized
         ]
+        self._last_scrape_diagnostics: ParseDiagnostics | None = None
         self.initialized = self.validate()
 
         if not self.initialized:
@@ -74,12 +82,18 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             return
 
         sorted_streams = self.scrape(item)
+        diagnostics = getattr(self, "_last_scrape_diagnostics", None)
 
         new_streams = [
             stream
             for stream in sorted_streams.values()
             if stream not in item.streams and stream not in item.blacklisted_streams
         ]
+        known_existing = sum(1 for stream in sorted_streams.values() if stream in item.streams)
+        known_blacklisted = sum(
+            1 for stream in sorted_streams.values() if stream in item.blacklisted_streams
+        )
+        known_total = known_existing + known_blacklisted
 
         if new_streams:
             item.streams.extend(new_streams)
@@ -88,17 +102,43 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             if item.failed_attempts > 0:
                 item.failed_attempts = 0  # Reset failed attempts on success
 
-            logger.log(
-                "SCRAPER", f"Added {len(new_streams)} new streams to {item.log_string}"
-            )
+            _log_scraper(f"Added {len(new_streams)} new streams to {item.log_string}")
         else:
-            logger.log("SCRAPER", f"No new streams added for {item.log_string}")
+            if sorted_streams:
+                _log_scraper(
+                    "No new streams added for {} (parsed_candidates={}, known_existing={}, known_blacklisted={})".format(
+                        item.log_string,
+                        len(sorted_streams),
+                        known_existing,
+                        known_blacklisted,
+                    )
+                )
+            elif diagnostics and diagnostics.input_results:
+                _log_scraper(
+                    "No new streams added for {} (raw_results={}, all_filtered=true, rejections={})".format(
+                        item.log_string,
+                        diagnostics.input_results,
+                        diagnostics.rejection_summary(),
+                    )
+                )
+            else:
+                _log_scraper(f"No new streams added for {item.log_string}")
 
-            item.failed_attempts += 1
             next_scraped_times = item.scraped_times + 1
+            count_as_failure = not (sorted_streams and known_total == len(sorted_streams))
+
+            if count_as_failure:
+                item.failed_attempts += 1
+            else:
+                logger.debug(
+                    "All parsed candidates for {} are already known; keeping failed_attempts at {}".format(
+                        item.log_string, item.failed_attempts
+                    )
+                )
 
             if (
-                self.max_failed_attempts > 0
+                count_as_failure
+                and self.max_failed_attempts > 0
                 and item.failed_attempts >= self.max_failed_attempts
             ):
                 item.store_state(States.Failed)
@@ -108,15 +148,23 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             else:
                 delay_seconds = self._scrape_backoff_seconds(next_scraped_times)
                 next_run_at = datetime.now() + timedelta(seconds=delay_seconds)
-                logger.debug(
-                    "Failed scraping after {}/{} tries with no new streams: {}. "
-                    "Scheduling next attempt at {}.".format(
-                        item.failed_attempts,
-                        self.max_failed_attempts,
-                        item.log_string,
-                        next_run_at.isoformat(timespec="seconds"),
+                if count_as_failure:
+                    logger.debug(
+                        "Failed scraping after {}/{} tries with no new streams: {}. "
+                        "Scheduling next attempt at {}.".format(
+                            item.failed_attempts,
+                            self.max_failed_attempts,
+                            item.log_string,
+                            next_run_at.isoformat(timespec="seconds"),
+                        )
                     )
-                )
+                else:
+                    logger.debug(
+                        "Rescheduling scrape for {} at {} because candidates are already known.".format(
+                            item.log_string,
+                            next_run_at.isoformat(timespec="seconds"),
+                        )
+                    )
 
         item.set("scraped_at", datetime.now())
         item.set("scraped_times", item.scraped_times + 1)
@@ -191,6 +239,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
 
         results = dict[str, str]()
         results_lock = threading.RLock()
+        self._last_scrape_diagnostics = None
 
         def run_service(svc: "ScraperService[Observable]", item: MediaItem) -> None:
             """Run a single service and update the results."""
@@ -226,7 +275,13 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             logger.log("NOT_FOUND", f"No streams to process for {item.log_string}")
             return {}
 
-        sorted_streams = parse_results(item, results, manual=manual)
+        sorted_streams, diagnostics = parse_results(
+            item,
+            results,
+            manual=manual,
+            return_diagnostics=True,
+        )
+        self._last_scrape_diagnostics = diagnostics
 
         if sorted_streams and (verbose_logging and settings_manager.settings.log_level):
             top_results = list(sorted_streams.values())[:10]

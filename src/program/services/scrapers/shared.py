@@ -1,5 +1,6 @@
 """Shared functions for scrapers."""
 
+from dataclasses import dataclass, field
 from typing import cast
 
 from loguru import logger
@@ -23,6 +24,30 @@ scraping_settings: ScraperModel = settings_manager.settings.scraping
 ranking_settings: RTNSettingsModel = settings_manager.settings.ranking
 ranking_model: BaseRankingModel = DefaultRanking()
 rtn = RTN(ranking_settings, ranking_model)
+
+
+@dataclass
+class ParseDiagnostics:
+    input_results: int = 0
+    duplicate_infohashes: int = 0
+    parse_errors: int = 0
+    accepted_before_bucket: int = 0
+    kept_after_bucket: int = 0
+    rejected_reasons: dict[str, int] = field(default_factory=dict)
+
+    def reject(self, reason: str) -> None:
+        self.rejected_reasons[reason] = self.rejected_reasons.get(reason, 0) + 1
+
+    def rejection_summary(self, limit: int = 5) -> str:
+        if not self.rejected_reasons:
+            return "none"
+
+        ordered = sorted(
+            self.rejected_reasons.items(),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        return ", ".join(f"{reason}={count}" for reason, count in ordered[:limit])
 
 
 def _with_rank_adjustment(torrent: Torrent, rank_adjustment: int) -> Torrent:
@@ -103,7 +128,8 @@ def parse_results(
     results: dict[str, str],
     log_msg: bool = True,
     manual: bool = False,
-) -> dict[str, Stream]:
+    return_diagnostics: bool = False,
+) -> dict[str, Stream] | tuple[dict[str, Stream], ParseDiagnostics]:
     """Parse the results from the scrapers into Torrent objects.
 
     Args:
@@ -112,6 +138,7 @@ def parse_results(
         manual: If True, bypass content filters (for manual scraping).
     """
 
+    diagnostics = ParseDiagnostics(input_results=len(results))
     torrents = set[Torrent]()
     processed_infohashes = set[str]()
     correct_title = item.top_title
@@ -138,6 +165,7 @@ def parse_results(
 
     for infohash, raw_title in results.items():
         if infohash in processed_infohashes:
+            diagnostics.duplicate_infohashes += 1
             continue
 
         try:
@@ -157,6 +185,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping show torrent for movie {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("movie_received_show_release")
                     continue
 
             if isinstance(item, Show):
@@ -165,6 +194,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping torrent with too few episodes for {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("show_too_few_episodes")
                     continue
 
                 # make sure all of the item seasons are present in the torrent
@@ -174,6 +204,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping torrent with incorrect number of seasons for {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("show_missing_seasons")
                     continue
 
                 if (
@@ -189,6 +220,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping torrent with incorrect number of episodes for {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("show_missing_episodes")
                     continue
 
             if isinstance(item, Season):
@@ -196,6 +228,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping torrent with no seasons or incorrect season number for {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("season_wrong_or_missing")
                     continue
 
                 # make sure the torrent has at least 2 episodes (should weed out most junk)
@@ -203,6 +236,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping torrent with too few episodes for {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("season_too_few_episodes")
                     continue
 
                 # disregard torrents with incorrect season number
@@ -210,6 +244,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping incorrect season torrent for {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("season_missing_number")
                     continue
 
                 if not manual and torrent.data.episodes and not all(
@@ -218,6 +253,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping incorrect season torrent for not having all episodes {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("season_missing_episodes")
                     continue
 
             if isinstance(item, Episode) and not manual:
@@ -248,6 +284,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping incorrect episode torrent for {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("episode_mismatch")
                     continue
 
                 parent_season = cast(Season, item.parent)
@@ -275,6 +312,7 @@ def parse_results(
                     logger.trace(
                         f"Skipping torrent for incorrect country with {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("country_mismatch")
                     continue
 
             if (
@@ -287,6 +325,7 @@ def parse_results(
                 logger.trace(
                     f"Skipping torrent for incorrect year with {item.log_string}: {raw_title}"
                 )
+                diagnostics.reject("year_mismatch")
                 continue
 
             if not manual and item.is_anime and scraping_settings.dubbed_anime_only:
@@ -295,17 +334,21 @@ def parse_results(
                     logger.trace(
                         f"Skipping non-dubbed anime torrent for {item.log_string}: {raw_title}"
                     )
+                    diagnostics.reject("anime_not_dubbed")
                     continue
 
             torrents.add(torrent)
             processed_infohashes.add(infohash)
         except Exception as e:
             logger.trace(f"GarbageTorrent: {e}")
+            diagnostics.parse_errors += 1
+            diagnostics.reject("parse_error")
             processed_infohashes.add(infohash)
             continue
 
     if torrents:
         logger.debug(f"Found {len(torrents)} streams for {item.log_string}")
+        diagnostics.accepted_before_bucket = len(torrents)
 
         sorted_torrents = sort_torrents(
             torrents,
@@ -320,9 +363,25 @@ def parse_results(
         logger.debug(
             f"Kept {len(torrent_stream_map)} streams for {item.log_string} after processing bucket limit"
         )
+        diagnostics.kept_after_bucket = len(torrent_stream_map)
 
+        if return_diagnostics:
+            return torrent_stream_map, diagnostics
         return torrent_stream_map
 
+    if log_msg and diagnostics.input_results:
+        logger.debug(
+            "No parseable streams kept for {} (raw_results={}, duplicates={}, parse_errors={}, rejections={})".format(
+                item.log_string,
+                diagnostics.input_results,
+                diagnostics.duplicate_infohashes,
+                diagnostics.parse_errors,
+                diagnostics.rejection_summary(),
+            )
+        )
+
+    if return_diagnostics:
+        return {}, diagnostics
     return {}
 
 

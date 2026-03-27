@@ -26,7 +26,6 @@ services:
       RIVEN_LIBRARY_PATH: /mount
       RIVEN_JELLYFIN_URL: http://jellyfin:8096
       RIVEN_CONTENT_OVERSEERR_URL: http://seerr:5055
-      RIVEN_SCRAPING_COMET_ENABLED: "false"
       RIVEN_SCRAPING_COMET_URL: http://comet:8000
       RIVEN_SCRAPING_PROWLARR_URL: http://prowlarr:9696
       RIVEN_SCRAPING_ZILEAN_ENABLED: "true"
@@ -182,6 +181,9 @@ services:
     restart: unless-stopped
     ports:
       - "9696:9696"
+    dns:
+      - 1.1.1.1
+      - 9.9.9.9
     environment:
       PUID: 1000
       PGID: 1000

@@ -1,5 +1,5 @@
 from program.services.scraper_selection import get_episode_stream_rank_adjustment
-from program.services.scrapers.shared import _with_rank_adjustment
+from program.services.scrapers.shared import ParseDiagnostics, _with_rank_adjustment
 from pydantic import BaseModel, ConfigDict
 
 
@@ -54,3 +54,12 @@ def test_with_rank_adjustment_returns_updated_copy_for_frozen_torrent():
     assert adjusted.rank == 300
     assert torrent.rank == 100
     assert adjusted is not torrent
+
+
+def test_parse_diagnostics_rejection_summary_is_sorted():
+    diagnostics = ParseDiagnostics()
+    diagnostics.reject("year_mismatch")
+    diagnostics.reject("parse_error")
+    diagnostics.reject("year_mismatch")
+
+    assert diagnostics.rejection_summary() == "year_mismatch=2, parse_error=1"
