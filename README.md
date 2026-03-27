@@ -124,7 +124,9 @@ In short:
 
 For local validation and integration testing before promoting changes, use
 [`docker-compose.dev.yml`](docker-compose.dev.yml). The production-oriented stack
-remains [`docker-compose.yml`](docker-compose.yml).
+remains [`docker-compose.yml`](docker-compose.yml). For image-based production deploys
+from GitHub (GHCR + SSH), use [`docker-compose.prod.yml`](docker-compose.prod.yml) and
+the guide at [`docs/deployment/github-actions-homelab.md`](docs/deployment/github-actions-homelab.md).
 
 ### Installation
 

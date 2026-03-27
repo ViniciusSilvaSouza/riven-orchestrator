@@ -1,0 +1,72 @@
+name: riven-prod
+
+services:
+  riven:
+    image: ${RIVEN_IMAGE:-ghcr.io/owner/repo:latest}
+    container_name: riven
+    restart: unless-stopped
+    tty: true
+    shm_size: 1024m
+    ports:
+      - "${RIVEN_BACKEND_PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - ORIGIN=${RIVEN_ORIGIN:-http://localhost:8080}
+      - RIVEN_FORCE_ENV=true
+      - RIVEN_DATABASE_HOST=${RIVEN_DATABASE_HOST:-postgresql+psycopg2://postgres:postgres@riven_postgres:5432/riven}
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/readyz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    volumes:
+      - ${RIVEN_DATA_DIR:-./container_data/riven}:/riven/data
+      - ${RIVEN_MOUNT_DIR:-./container_data/mount}:/mount:rshared,z
+    depends_on:
+      riven_postgres:
+        condition: service_healthy
+
+  riven_postgres:
+    image: postgres:17-alpine
+    container_name: riven_postgres
+    restart: unless-stopped
+    environment:
+      - PGDATA=/var/lib/postgresql/data/pgdata
+      - POSTGRES_USER=${RIVEN_POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${RIVEN_POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${RIVEN_POSTGRES_DB:-riven}
+    volumes:
+      - ${RIVEN_DB_DIR:-./container_data/db}:/var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${RIVEN_POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    user: ${JELLYFIN_UID:-1000}:${JELLYFIN_GID:-1000}
+    restart: unless-stopped
+    profiles:
+      - jellyfin
+    ports:
+      - "${JELLYFIN_PORT:-8096}:8096"
+    volumes:
+      - ${JELLYFIN_CONFIG_DIR:-./container_data/jellyfin_config}:/config
+      - ${RIVEN_MOUNT_DIR:-./container_data/mount}:/mount:rslave,z
+
+networks:
+  default:
+    name: ${RIVEN_NETWORK_NAME:-riven_net}

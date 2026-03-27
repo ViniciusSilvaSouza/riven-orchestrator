@@ -1,0 +1,52 @@
+name: Deploy Production
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. v1.2.3 or latest)"
+        required: true
+        default: "latest"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    environment: production
+    steps:
+      - name: Resolve image tag
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy on homelab host
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+          IMAGE_REPO: ghcr.io/${{ github.repository }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          envs: IMAGE_TAG,IMAGE_REPO,DEPLOY_PATH,GHCR_USER,GHCR_TOKEN
+          script: |
+            set -eu
+            cd "$DEPLOY_PATH"
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            export RIVEN_IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
+            docker compose -f docker-compose.prod.yml pull riven
+            docker compose -f docker-compose.prod.yml up -d riven
+            docker compose -f docker-compose.prod.yml ps
