@@ -359,11 +359,41 @@ def get_pipeline_health_snapshot(session: Session | None = None) -> dict[str, An
             )
 
         indexed_backlog = int(indexed_backlog_row.indexed_backlog or 0)
-        stalled = bool(
+
+        # Operational targets for backlog-heavy pipelines.
+        # These are intentionally conservative and focused on early detection.
+        target_max_minutes_without_completion = 10
+        target_min_completed_per_hour = 6
+
+        reasons = list[str]()
+        status = "healthy"
+        if (
             indexed_backlog > 0
             and minutes_since_last_completed is not None
-            and minutes_since_last_completed >= 60
-        )
+            and minutes_since_last_completed > target_max_minutes_without_completion
+        ):
+            status = "degraded"
+            reasons.append(
+                "No completion for {} minutes (target <= {}m)".format(
+                    minutes_since_last_completed, target_max_minutes_without_completion
+                )
+            )
+
+        completed_1h = int(throughput_row.completed_1h or 0)
+        if indexed_backlog > 0 and completed_1h < target_min_completed_per_hour:
+            status = "degraded"
+            reasons.append(
+                "Low throughput: {} completed in 1h (target >= {})".format(
+                    completed_1h, target_min_completed_per_hour
+                )
+            )
+
+        failed_ge20 = int(indexed_backlog_row.failed_attempts_ge_20 or 0)
+        if failed_ge20 >= 100:
+            status = "critical"
+            reasons.append(
+                f"High repeated failures: {failed_ge20} indexed items with failed_attempts >= 20"
+            )
 
         def _to_hours(value_seconds: Any) -> float | None:
             if value_seconds is None:
@@ -372,15 +402,23 @@ def get_pipeline_health_snapshot(session: Session | None = None) -> dict[str, An
 
         return {
             "health": {
-                "is_stalled": stalled,
+                "status": status,
                 "minutes_since_last_completed": minutes_since_last_completed,
                 "last_completed_at": (
                     last_completed_at.isoformat() if last_completed_at else None
                 ),
                 "indexed_backlog": indexed_backlog,
             },
+            "targets": {
+                "max_minutes_without_completion": target_max_minutes_without_completion,
+                "min_completed_per_hour": target_min_completed_per_hour,
+            },
+            "assessment": {
+                "status": status,
+                "reasons": reasons,
+            },
             "throughput": {
-                "completed_1h": int(throughput_row.completed_1h or 0),
+                "completed_1h": completed_1h,
                 "completed_24h": int(throughput_row.completed_24h or 0),
                 "indexed_1h": int(throughput_row.indexed_1h or 0),
                 "indexed_24h": int(throughput_row.indexed_24h or 0),

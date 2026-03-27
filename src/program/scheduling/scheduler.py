@@ -227,14 +227,18 @@ class ProgramScheduler:
         snapshot = db_functions.get_pipeline_health_snapshot()
         health = snapshot.get("health", {})
         bottlenecks = snapshot.get("bottlenecks", {})
+        targets = snapshot.get("targets", {})
+        assessment = snapshot.get("assessment", {})
 
         issues = list[str]()
 
-        if health.get("is_stalled") and int(health.get("indexed_backlog", 0)) >= 50:
+        if health.get("status") in {"degraded", "critical"}:
             issues.append(
-                "pipeline_stalled(indexed_backlog={}, last_completed={}m)".format(
+                "pipeline_{}(indexed_backlog={}, last_completed={}m, target={}m)".format(
+                    health.get("status"),
                     health.get("indexed_backlog", 0),
                     health.get("minutes_since_last_completed"),
+                    targets.get("max_minutes_without_completion"),
                 )
             )
 
@@ -265,8 +269,10 @@ class ProgramScheduler:
             "Pipeline health alert:\n"
             f"- issues: {', '.join(issues)}\n"
             f"- completed_1h: {snapshot.get('throughput', {}).get('completed_1h', 0)}\n"
+            f"- min_completed_per_hour_target: {targets.get('min_completed_per_hour')}\n"
             f"- p95_completion_hours: {completion_time.get('p95_hours')}\n"
-            f"- avg_indexed_age_hours: {snapshot.get('backlog_age', {}).get('avg_indexed_age_hours')}"
+            f"- avg_indexed_age_hours: {snapshot.get('backlog_age', {}).get('avg_indexed_age_hours')}\n"
+            f"- reasons: {assessment.get('reasons', [])}"
         )
 
         logger.warning(message)
