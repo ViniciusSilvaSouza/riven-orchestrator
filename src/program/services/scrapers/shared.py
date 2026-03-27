@@ -25,6 +25,32 @@ ranking_model: BaseRankingModel = DefaultRanking()
 rtn = RTN(ranking_settings, ranking_model)
 
 
+def _with_rank_adjustment(torrent: Torrent, rank_adjustment: int) -> Torrent:
+    """Return a torrent with rank adjustment applied, respecting frozen models."""
+
+    if not rank_adjustment:
+        return torrent
+
+    new_rank = torrent.rank + rank_adjustment
+
+    model_copy = getattr(torrent, "model_copy", None)
+    if callable(model_copy):
+        try:
+            return model_copy(update={"rank": new_rank})
+        except Exception:
+            # Fallback to best-effort in-place update for non-pydantic objects.
+            pass
+
+    try:
+        setattr(torrent, "rank", new_rank)
+    except Exception:
+        logger.trace(
+            f"Unable to adjust rank for torrent {torrent.infohash}; keeping original rank"
+        )
+
+    return torrent
+
+
 def get_ranking_overrides(
     ranking_overrides: dict[str, list[str]] | None,
 ) -> SettingsModel | None:
@@ -233,7 +259,7 @@ def parse_results(
                     candidate_seasons=torrent.data.seasons,
                 )
                 if rank_adjustment:
-                    torrent.rank += rank_adjustment
+                    torrent = _with_rank_adjustment(torrent, rank_adjustment)
                     logger.trace(
                         "Adjusted episode torrent rank by "
                         f"{rank_adjustment} for {item.log_string}: {raw_title}"

@@ -1,4 +1,13 @@
 from program.services.scraper_selection import get_episode_stream_rank_adjustment
+from program.services.scrapers.shared import _with_rank_adjustment
+from pydantic import BaseModel, ConfigDict
+
+
+class FrozenTorrent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    infohash: str
+    rank: int
 
 
 def test_episode_specific_release_gets_large_bonus():
@@ -35,3 +44,13 @@ def test_season_only_pack_gets_penalty_for_single_episode_item():
     )
 
     assert adjustment == -1000
+
+
+def test_with_rank_adjustment_returns_updated_copy_for_frozen_torrent():
+    torrent = FrozenTorrent(infohash="abc123", rank=100)
+
+    adjusted = _with_rank_adjustment(torrent, 200)
+
+    assert adjusted.rank == 300
+    assert torrent.rank == 100
+    assert adjusted is not torrent
