@@ -1,7 +1,7 @@
 import threading
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from queue import Queue, Empty
 
 
@@ -66,6 +66,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         item: MediaItem,
     ) -> MediaItemGenerator:
         """Scrape an item."""
+        next_run_at: datetime | None = None
 
         # Skip if item is already satisfied (e.g. by a parallel season scrape)
         if item.last_state in (States.Downloaded, States.Symlinked, States.Completed):
@@ -94,6 +95,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             logger.log("SCRAPER", f"No new streams added for {item.log_string}")
 
             item.failed_attempts += 1
+            next_scraped_times = item.scraped_times + 1
 
             if (
                 self.max_failed_attempts > 0
@@ -104,14 +106,74 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
                     f"Failed scraping after {item.failed_attempts}/{self.max_failed_attempts} tries. Marking as failed: {item.log_string}"
                 )
             else:
+                delay_seconds = self._scrape_backoff_seconds(next_scraped_times)
+                next_run_at = datetime.now() + timedelta(seconds=delay_seconds)
                 logger.debug(
-                    f"Failed scraping after {item.failed_attempts}/{self.max_failed_attempts} tries with no new streams: {item.log_string}"
+                    "Failed scraping after {}/{} tries with no new streams: {}. "
+                    "Scheduling next attempt at {}.".format(
+                        item.failed_attempts,
+                        self.max_failed_attempts,
+                        item.log_string,
+                        next_run_at.isoformat(timespec="seconds"),
+                    )
                 )
 
         item.set("scraped_at", datetime.now())
         item.set("scraped_times", item.scraped_times + 1)
 
-        yield RunnerResult(media_items=[item])
+        yield RunnerResult(media_items=[item], run_at=next_run_at)
+
+    @staticmethod
+    def _interpolate_delay_seconds(
+        start_seconds: float,
+        end_seconds: float,
+        step_index: int,
+        total_steps: int,
+    ) -> int:
+        if total_steps <= 0:
+            return int(end_seconds)
+
+        ratio = max(0.0, min(1.0, step_index / total_steps))
+        return int(start_seconds + ((end_seconds - start_seconds) * ratio))
+
+    def _scrape_backoff_seconds(self, scraped_times: int) -> int:
+        """
+        Compute progressive scrape backoff.
+
+        This avoids abrupt jumps while still respecting configured upper bounds:
+        - 1: 30 minutes
+        - 2..5: gradually ramps from 30 minutes to after_2 hours
+        - 6..10: gradually ramps from after_2 to after_5 hours
+        - >10: after_10 hours
+        """
+        settings = settings_manager.settings.scraping
+        base_seconds = 30 * 60
+        after_2_seconds = max(base_seconds, int(settings.after_2 * 60 * 60))
+        after_5_seconds = max(after_2_seconds, int(settings.after_5 * 60 * 60))
+        after_10_seconds = max(after_5_seconds, int(settings.after_10 * 60 * 60))
+
+        if scraped_times <= 1:
+            return base_seconds
+
+        if scraped_times <= 5:
+            # scraped_times=2 -> first ramp step, scraped_times=5 -> after_2
+            return self._interpolate_delay_seconds(
+                base_seconds,
+                after_2_seconds,
+                scraped_times - 1,
+                4,
+            )
+
+        if scraped_times <= 10:
+            # scraped_times=6 -> first ramp step, scraped_times=10 -> after_5
+            return self._interpolate_delay_seconds(
+                after_2_seconds,
+                after_5_seconds,
+                scraped_times - 5,
+                5,
+            )
+
+        return after_10_seconds
 
     def scrape(
         self,
@@ -251,14 +313,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         """Check if an item should be submitted for scraping."""
 
         settings = settings_manager.settings.scraping
-        scrape_time = 30 * 60  # 30 minutes by default
-
-        if item.scraped_times >= 2 and item.scraped_times <= 5:
-            scrape_time = settings.after_2 * 60 * 60
-        elif item.scraped_times > 5 and item.scraped_times <= 10:
-            scrape_time = settings.after_5 * 60 * 60
-        elif item.scraped_times > 10:
-            scrape_time = settings.after_10 * 60 * 60
+        scrape_time = self._scrape_backoff_seconds(item.scraped_times)
 
         is_scrapeable = (
             not item.scraped_at

@@ -108,6 +108,16 @@ def test_process_event_breaks_show_into_incomplete_seasons_for_scraping(services
     assert list(processed_event.related_media_items) == [show.seasons[0]]
 
 
+def test_process_event_allows_scraping_emitted_retry_when_due(services):
+    movie = Movie({"imdb_id": "tt1375666", "requested_by": "Iceberg"})
+    movie.last_state = States.Indexed
+
+    processed_event = process_event(services.scraping, existing_item=movie)
+
+    assert processed_event.service is services.scraping
+    assert list(processed_event.related_media_items) == [movie]
+
+
 @pytest.mark.parametrize(
     ("state", "expected_service_name"),
     [

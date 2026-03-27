@@ -88,10 +88,7 @@ def process_event(
     elif existing_item and existing_item.last_state in [States.Indexed, States.Unknown]:
         next_service = services.scraping
 
-        if emitted_by != services.scraping and (
-            overrides is not None
-            or services.scraping.should_submit(existing_item)
-        ):
+        if overrides is not None or services.scraping.should_submit(existing_item):
             items_to_submit = [existing_item]
         elif isinstance(existing_item, Show):
             # Decompose Show → Seasons (each season scrapes for packs)
