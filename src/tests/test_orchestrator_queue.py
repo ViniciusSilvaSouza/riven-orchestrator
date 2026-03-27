@@ -635,7 +635,7 @@ def test_probe_provider_caches_parallel_returns_acquiring_without_negative_cache
         lambda _infohash, provider, status: saved.append((provider, status)),
     )
 
-    provider, cache_result, error = manager._probe_provider_caches_parallel(
+    provider, cache_result, error, policy_blocked = manager._probe_provider_caches_parallel(
         FakeWrapper(),
         [service_a, service_b],
         "abc123",
@@ -647,6 +647,7 @@ def test_probe_provider_caches_parallel_returns_acquiring_without_negative_cache
     assert provider.key == "realdebrid"
     assert cache_result is not None
     assert cache_result.is_acquiring is True
+    assert policy_blocked is False
     assert saved == [("alldebrid", DebridCacheStatus.NOT_FOUND)]
 
 

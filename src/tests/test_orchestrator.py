@@ -377,7 +377,7 @@ def test_probe_provider_caches_parallel_returns_first_cached_provider(monkeypatc
         lambda infohash, provider, status: saved.append((provider, status)),
     )
 
-    provider, cache_result, error = manager._probe_provider_caches_parallel(
+    provider, cache_result, error, policy_blocked = manager._probe_provider_caches_parallel(
         FakeWrapper(),
         [service_a, service_b],
         "abc123",
@@ -390,9 +390,10 @@ def test_probe_provider_caches_parallel_returns_first_cached_provider(monkeypatc
     assert cache_result is not None
     assert cache_result.is_cached is True
     assert error == ""
+    assert policy_blocked is False
 
 
-def test_probe_provider_caches_parallel_records_not_found_for_uncached(monkeypatch):
+def test_probe_provider_caches_parallel_flags_policy_blocked_when_all_providers_block(monkeypatch):
     manager = DebridManager()
     service_a = Mock(key="realdebrid")
     service_b = Mock(key="alldebrid")
@@ -414,7 +415,7 @@ def test_probe_provider_caches_parallel_records_not_found_for_uncached(monkeypat
         lambda infohash, provider, status: saved.append((provider, status)),
     )
 
-    provider, cache_result, error = manager._probe_provider_caches_parallel(
+    provider, cache_result, error, policy_blocked = manager._probe_provider_caches_parallel(
         FakeWrapper(),
         [service_a, service_b],
         "abc123",
@@ -425,8 +426,49 @@ def test_probe_provider_caches_parallel_records_not_found_for_uncached(monkeypat
     assert provider is None
     assert cache_result is None
     assert "Stream not cached on" in error
+    assert policy_blocked is False
     assert len(saved) == 2
     assert all(status == DebridCacheStatus.NOT_FOUND for _, status in saved)
+
+
+def test_probe_provider_caches_parallel_records_not_found_for_uncached(monkeypatch):
+    manager = DebridManager()
+    service_a = Mock(key="realdebrid")
+    service_b = Mock(key="alldebrid")
+    saved = []
+    classifications = []
+
+    class FakeWrapper:
+        def check_cache(self, service, infohash, *, item, stream, allow_pending=False):
+            _ = service, infohash, item, stream, allow_pending
+            raise RuntimeError("[451] Infringing Torrent")
+
+    monkeypatch.setattr(
+        manager,
+        "save_resolution",
+        lambda infohash, provider, status: saved.append((provider, status)),
+    )
+    monkeypatch.setattr(
+        manager,
+        "record_provider_exception",
+        lambda provider, exc: classifications.append((provider, str(exc))),
+    )
+
+    provider, cache_result, error, policy_blocked = manager._probe_provider_caches_parallel(
+        FakeWrapper(),
+        [service_a, service_b],
+        "abc123",
+        Mock(id=1, type="episode", log_string="Episode"),
+        Mock(infohash="abc123"),
+    )
+
+    assert provider is None
+    assert cache_result is None
+    assert "451" in error
+    assert policy_blocked is True
+    assert len(saved) == 2
+    assert all(status == DebridCacheStatus.NOT_FOUND for _, status in saved)
+    assert len(classifications) == 2
 
 
 def test_build_provider_task_lanes_groups_tasks_per_provider(monkeypatch):

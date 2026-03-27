@@ -1201,6 +1201,7 @@ class DebridManager:
         selected_service = None
         selected_cache = None
         probe_error = ""
+        probe_policy_blocked = False
 
         if task_provider_torrent_id and provider_hint:
             selected_service = eligible_services[0]
@@ -1220,18 +1221,28 @@ class DebridManager:
                     torrent_id=task_provider_torrent_id,
                 )
             except Exception as exc:
-                self.save_resolution(
-                    task_infohash, selected_service.key, DebridCacheStatus.ERROR
+                _rate_limited, _cooldown, classification = self._classify_provider_exception(exc)
+                cache_status = (
+                    DebridCacheStatus.NOT_FOUND
+                    if classification == "content_policy_blocked"
+                    else DebridCacheStatus.ERROR
                 )
+                self.save_resolution(task_infohash, selected_service.key, cache_status)
                 self.record_provider_exception(selected_service.key, exc)
                 probe_error = self._format_exception(exc)
+                probe_policy_blocked = classification == "content_policy_blocked"
                 selected_service = None
                 selected_cache = None
         else:
             logger.debug(
                 f"Task {task_id} probing cache in parallel across providers={[service.key for service in eligible_services]}"
             )
-            selected_service, selected_cache, probe_error = self._probe_provider_caches_parallel(
+            (
+                selected_service,
+                selected_cache,
+                probe_error,
+                probe_policy_blocked,
+            ) = self._probe_provider_caches_parallel(
                 provider_wrapper,
                 eligible_services,
                 task_infohash,
@@ -1243,6 +1254,16 @@ class DebridManager:
             logger.warning(
                 f"Task {task_id} failed cache probe across providers: {probe_error or last_error}"
             )
+            if probe_policy_blocked:
+                return self._blacklist_blocked_stream_and_advance(
+                    task_id=task_id,
+                    item_id=item_id,
+                    infohash=task_infohash,
+                    error=(
+                        "Provider policy blocked this hash during cache probe: "
+                        f"{probe_error or last_error}"
+                    ),
+                )
             self._requeue_task(
                 task_id,
                 error=probe_error or last_error,
@@ -1527,12 +1548,13 @@ class DebridManager:
         infohash: str,
         item,
         stream,
-    ) -> tuple["DownloaderBase | None", ProviderCacheResult | None, str]:
+    ) -> tuple["DownloaderBase | None", ProviderCacheResult | None, str, bool]:
         if not services:
-            return (None, None, "No providers available for cache probing")
+            return (None, None, "No providers available for cache probing", False)
 
         max_workers = max(1, len(services))
         acquiring_results: dict[str, ProviderCacheResult] = {}
+        policy_blocked_providers: set[str] = set()
         last_error = ""
         logger.debug(
             f"Starting parallel cache probe for infohash={infohash} providers={[service.key for service in services]}"
@@ -1561,7 +1583,7 @@ class DebridManager:
                         _log_debrid(
                             f"Cache probe winner for infohash={infohash}: provider={service.key}"
                         )
-                        return (service, cache_result, "")
+                        return (service, cache_result, "", False)
 
                     if cache_result.is_acquiring:
                         acquiring_results[service.key] = cache_result
@@ -1583,8 +1605,16 @@ class DebridManager:
                     )
                     last_error = f"Stream not cached on {service.key}"
                 except Exception as exc:
-                    self.save_resolution(infohash, service.key, DebridCacheStatus.ERROR)
+                    _rate_limited, _cooldown, classification = self._classify_provider_exception(exc)
+                    status = (
+                        DebridCacheStatus.NOT_FOUND
+                        if classification == "content_policy_blocked"
+                        else DebridCacheStatus.ERROR
+                    )
+                    self.save_resolution(infohash, service.key, status)
                     self.record_provider_exception(service.key, exc)
+                    if classification == "content_policy_blocked":
+                        policy_blocked_providers.add(service.key)
                     last_error = self._format_exception(exc)
 
         if acquiring_results:
@@ -1595,9 +1625,15 @@ class DebridManager:
                 _log_debrid(
                     f"Cache probe pending winner for infohash={infohash}: provider={service.key}"
                 )
-                return (service, cache_result, "")
+                return (service, cache_result, "", False)
 
-        return (None, None, last_error or "No provider could resolve stream")
+        blocked_everywhere = len(policy_blocked_providers) == len(services)
+        return (
+            None,
+            None,
+            last_error or "No provider could resolve stream",
+            blocked_everywhere,
+        )
 
     def _park_acquiring_task(
         self,

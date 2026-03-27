@@ -1,3 +1,5 @@
+import pytest
+
 from program.services.downloaders.models import (
     DebridFile,
     TorrentContainer,
@@ -5,7 +7,7 @@ from program.services.downloaders.models import (
     TorrentProbeResult,
     TorrentProbeStatus,
 )
-from program.services.downloaders.realdebrid import RealDebridDownloader
+from program.services.downloaders.realdebrid import RealDebridDownloader, RealDebridError
 
 
 def test_get_instant_availability_caches_torrent_context(monkeypatch):
@@ -43,3 +45,15 @@ def test_get_instant_availability_caches_torrent_context(monkeypatch):
     assert result is not None
     assert result.torrent_id == "rd-123"
     assert result.torrent_info == torrent_info
+
+
+def test_get_instant_availability_raises_for_policy_block_451(monkeypatch):
+    downloader = RealDebridDownloader()
+    monkeypatch.setattr(
+        downloader,
+        "add_torrent",
+        lambda _infohash: (_ for _ in ()).throw(RealDebridError("[451] Infringing Torrent")),
+    )
+
+    with pytest.raises(RealDebridError):
+        downloader.get_instant_availability("blockedhash", "movie")

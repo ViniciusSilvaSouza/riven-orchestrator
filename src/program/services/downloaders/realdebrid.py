@@ -293,6 +293,11 @@ class RealDebridDownloader(DownloaderBase):
             raise
         except RealDebridError as e:
             # add_torrent/select_files/delete_torrent surface HTTP error context via _handle_error
+            message = str(e).lower()
+            if "451" in message or "infringing torrent" in message or "infringing file" in message:
+                # Let orchestrator classify policy blocks and advance to next candidate.
+                raise
+
             logger.warning(f"Availability check failed [{infohash}]: {e}")
 
             if torrent_id:
