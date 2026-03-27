@@ -1,5 +1,9 @@
 from program.services.scraper_selection import get_episode_stream_rank_adjustment
-from program.services.scrapers.shared import ParseDiagnostics, _with_rank_adjustment
+from program.services.scrapers.shared import (
+    ParseDiagnostics,
+    _classify_parse_exception,
+    _with_rank_adjustment,
+)
 from pydantic import BaseModel, ConfigDict
 
 
@@ -63,3 +67,10 @@ def test_parse_diagnostics_rejection_summary_is_sorted():
     diagnostics.reject("year_mismatch")
 
     assert diagnostics.rejection_summary() == "year_mismatch=2, parse_error=1"
+
+
+def test_classify_parse_exception_maps_title_mismatch():
+    error = ValueError(
+        "GarbageTorrent 'foo' does not match the correct title. correct title: 'The Rookie'"
+    )
+    assert _classify_parse_exception(error) == "title_mismatch"

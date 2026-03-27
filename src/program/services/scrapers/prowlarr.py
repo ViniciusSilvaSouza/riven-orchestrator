@@ -80,7 +80,17 @@ class ScrapeErrorResponse(BaseModel):
     message: str | None = None
 
 
-ANIME_ONLY_INDEXERS = ("Nyaa.si", "SubsPlease", "Anidub", "Anidex")
+ANIME_ONLY_INDEXERS = (
+    "Nyaa.si",
+    "SubsPlease",
+    "Anidub",
+    "Anidex",
+    "Shana Project",
+    "Tokyo Toshokan",
+    "Bangumi Moe",
+    "DMHY",
+    "Anime Tosho",
+)
 
 
 class Prowlarr(ScraperService[ProwlarrConfig]):
@@ -539,6 +549,12 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
     ) -> tuple[str, str, int | None, int | None]:
         """Build search params for season items."""
 
+        top_imdb_id = item.get_top_imdb_id()
+
+        if "imdbId" in search_params.tv and top_imdb_id:
+            season = item.number if "season" in search_params.tv else None
+            return top_imdb_id, "tv-search", season, None
+
         season_query = cls._season_release_query(item_title, item.number)
 
         if "q" in search_params.tv:
@@ -559,6 +575,15 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
         indexer_name: str | None,
     ) -> tuple[str, str, int | None, int | None]:
         """Build search params for episode items."""
+
+        top_imdb_id = item.get_top_imdb_id()
+
+        if "imdbId" in search_params.tv and top_imdb_id:
+            if "ep" in search_params.tv:
+                return top_imdb_id, "tv-search", item.parent.number, item.number
+            if "season" in search_params.tv:
+                return top_imdb_id, "tv-search", item.parent.number, None
+            return top_imdb_id, "tv-search", None, None
 
         if "q" in search_params.tv:
             if "ep" in search_params.tv:

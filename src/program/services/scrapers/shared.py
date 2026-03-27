@@ -50,6 +50,15 @@ class ParseDiagnostics:
         return ", ".join(f"{reason}={count}" for reason, count in ordered[:limit])
 
 
+def _classify_parse_exception(error: Exception) -> str:
+    message = str(error).lower()
+
+    if "does not match the correct title" in message:
+        return "title_mismatch"
+
+    return "parse_error"
+
+
 def _with_rank_adjustment(torrent: Torrent, rank_adjustment: int) -> Torrent:
     """Return a torrent with rank adjustment applied, respecting frozen models."""
 
@@ -341,8 +350,10 @@ def parse_results(
             processed_infohashes.add(infohash)
         except Exception as e:
             logger.trace(f"GarbageTorrent: {e}")
-            diagnostics.parse_errors += 1
-            diagnostics.reject("parse_error")
+            reason = _classify_parse_exception(e)
+            if reason == "parse_error":
+                diagnostics.parse_errors += 1
+            diagnostics.reject(reason)
             processed_infohashes.add(infohash)
             continue
 
