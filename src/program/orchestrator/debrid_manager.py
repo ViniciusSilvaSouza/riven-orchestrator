@@ -1430,19 +1430,93 @@ class DebridManager:
             return False
         except Exception as exc:
             error_summary = self._format_exception(exc)
-            self.save_resolution(
-                task_infohash, selected_service.key, DebridCacheStatus.ERROR
+            _rate_limited, _cooldown, classification = self._classify_provider_exception(exc)
+            cache_status = (
+                DebridCacheStatus.NOT_FOUND
+                if classification == "content_policy_blocked"
+                else DebridCacheStatus.ERROR
             )
+            self.save_resolution(task_infohash, selected_service.key, cache_status)
             self.record_provider_exception(selected_service.key, exc)
             last_error = error_summary
             logger.debug(
                 f"Queued resolution failed for {task_infohash} on {selected_service.key}: {error_summary}"
             )
+            if classification == "content_policy_blocked":
+                return self._blacklist_blocked_stream_and_advance(
+                    task_id=task_id,
+                    item_id=item_id,
+                    infohash=task_infohash,
+                    error=f"Provider policy blocked this hash on {selected_service.key}: {error_summary}",
+                )
 
         self._requeue_task(
             task_id,
             error=last_error,
             delay=self._queue_backoff * 5,
+        )
+        return False
+
+    def _blacklist_blocked_stream_and_advance(
+        self,
+        *,
+        task_id: int,
+        item_id: int,
+        infohash: str,
+        error: str,
+    ) -> bool:
+        from program.db import db_functions
+
+        queued_follow_up = 0
+        with db_session() as session:
+            task = session.get(DebridResolutionTask, task_id)
+            if task is None:
+                return False
+
+            item = db_functions.get_item_by_id(item_id, session=session)
+            if item is None:
+                self._finalize_task(
+                    session,
+                    task,
+                    status=DebridTaskStatus.CANCELLED,
+                    error="Item no longer exists",
+                )
+                session.commit()
+                return False
+
+            item = session.merge(item)
+            stream = next((s for s in item.streams if s.infohash == infohash), None)
+            if stream is not None:
+                item.blacklist_stream(stream)
+
+            self._finalize_task(
+                session,
+                task,
+                status=DebridTaskStatus.FAILED,
+                error=error,
+            )
+            session.commit()
+
+        # Refill queue with the next best candidate after blacklisting this blocked hash.
+        with db_session() as session:
+            item = db_functions.get_item_by_id(item_id, session=session)
+            if item is not None:
+                item = session.merge(item)
+                queued_follow_up = self.enqueue_resolution_tasks(
+                    item,
+                    trigger=DebridTaskTrigger.RETRY,
+                    priority=DebridTaskPriority.NORMAL,
+                    max_attempts=3,
+                    max_streams=3,
+                )
+
+        logger.warning(
+            "Task {} failed due to provider policy block for {}. "
+            "Blacklisted hash and queued {} follow-up candidate task(s).".format(
+                task_id,
+                infohash,
+                queued_follow_up,
+            )
         )
         return False
 
@@ -1803,6 +1877,9 @@ class DebridManager:
         if isinstance(exc, ProviderNoMatchingFilesError) or exc_name == "nomatchingfilesexception":
             return (False, 0, "content_mismatch")
 
+        if "451" in combined_text or "infringing torrent" in combined_text or "infringing file" in combined_text:
+            return (False, 0, "content_policy_blocked")
+
         if "429" in combined_text or "rate limit" in combined_text or "circuitbreakeropen" in exc_name:
             return (
                 True,
@@ -1857,7 +1934,12 @@ class DebridManager:
             "Provider error classified: "
             f"provider={provider}, class={classification}, cooldown={cooldown_minutes}m, error={error_summary}"
         )
-        if classification in {"content_mismatch", "transient_unknown", "transient_error"}:
+        if classification in {
+            "content_mismatch",
+            "content_policy_blocked",
+            "transient_unknown",
+            "transient_error",
+        }:
             self.mark_provider_content_mismatch(
                 provider,
                 reason=f"{classification}: {error_summary}",

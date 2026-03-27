@@ -79,6 +79,25 @@ class FakeTaskSession:
         self.committed = True
 
 
+class FakePolicyBlockSession:
+    def __init__(self, task=None, item=None):
+        self.task = task
+        self.item = item
+        self.committed = False
+
+    def get(self, _model, _task_id):
+        return self.task
+
+    def merge(self, obj):
+        return obj
+
+    def add(self, _obj):
+        return None
+
+    def commit(self):
+        self.committed = True
+
+
 class FakeStaleProcessingSession:
     def __init__(self, stale_tasks):
         self.stale_tasks = stale_tasks
@@ -279,6 +298,78 @@ def test_recover_stale_processing_tasks_after_restart_requeues_worker_state(monk
     assert task.last_error == "Recovered stale processing task after interrupted worker"
     assert isinstance(task.available_at, datetime)
     assert isinstance(task.updated_at, datetime)
+
+
+def test_blacklist_blocked_stream_and_advance_queues_next_candidate(monkeypatch):
+    manager = DebridManager()
+    debrid_manager_module = importlib.import_module("program.orchestrator.debrid_manager")
+
+    task = Mock(
+        status=DebridTaskStatus.PROCESSING,
+        provider_torrent_id="rd-1",
+        provider_torrent_status="queued",
+        acquiring_started_at=datetime.utcnow(),
+        completed_at=None,
+        locked_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        last_error=None,
+    )
+    blocked_stream = Mock(infohash="hash-blocked")
+    item = Mock(
+        id=321,
+        streams=[blocked_stream],
+        log_string="JoJo S01E01",
+    )
+    item.blacklist_stream = Mock(return_value=True)
+
+    first_session = FakePolicyBlockSession(task=task, item=item)
+    second_session = FakePolicyBlockSession(task=None, item=item)
+    sessions = [first_session, second_session]
+    enqueued = []
+
+    @contextmanager
+    def session_factory():
+        yield sessions.pop(0)
+
+    monkeypatch.setattr(debrid_manager_module, "db_session", session_factory)
+
+    db_package = importlib.import_module("program.db")
+    db_functions_module = types.ModuleType("program.db.db_functions")
+    db_functions_module.get_item_by_id = (
+        lambda item_id, **_kwargs: item if item_id == 321 else None
+    )
+    monkeypatch.setitem(sys.modules, "program.db.db_functions", db_functions_module)
+    monkeypatch.setattr(db_package, "db_functions", db_functions_module, raising=False)
+
+    monkeypatch.setattr(
+        manager,
+        "enqueue_resolution_tasks",
+        lambda queued_item, **kwargs: enqueued.append((queued_item.id, kwargs)) or 1,
+    )
+
+    handled = manager._blacklist_blocked_stream_and_advance(
+        task_id=99,
+        item_id=321,
+        infohash="hash-blocked",
+        error="Provider policy blocked this hash on realdebrid: [451] Infringing Torrent",
+    )
+
+    assert handled is False
+    item.blacklist_stream.assert_called_once_with(blocked_stream)
+    assert task.status == DebridTaskStatus.FAILED
+    assert "Provider policy blocked this hash" in str(task.last_error)
+    assert first_session.committed is True
+    assert enqueued == [
+        (
+            321,
+            {
+                "trigger": DebridTaskTrigger.RETRY,
+                "priority": DebridTaskPriority.NORMAL,
+                "max_attempts": 3,
+                "max_streams": 3,
+            },
+        )
+    ]
 
 
 def test_park_acquiring_task_persists_provider_torrent_state(monkeypatch):

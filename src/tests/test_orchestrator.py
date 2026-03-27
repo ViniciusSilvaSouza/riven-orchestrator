@@ -264,6 +264,24 @@ def test_record_provider_exception_keeps_provider_available_for_content_mismatch
     assert "content_mismatch" in managed.last_error
 
 
+def test_record_provider_exception_keeps_provider_available_for_policy_block_451():
+    manager = DebridManager()
+    service = Mock(key="realdebrid")
+    manager.sync_services([service])
+
+    manager.record_provider_exception(
+        "realdebrid",
+        RuntimeError("[451] Infringing Torrent"),
+    )
+    managed = manager._registry.get("realdebrid")
+
+    assert managed is not None
+    assert managed.health == ProviderHealthState.HEALTHY
+    assert managed.cooldown_until is None
+    assert managed.last_error is not None
+    assert "content_policy_blocked" in managed.last_error
+
+
 def test_record_provider_exception_keeps_provider_available_for_transient_unknown():
     manager = DebridManager()
     service = Mock(key="realdebrid")
