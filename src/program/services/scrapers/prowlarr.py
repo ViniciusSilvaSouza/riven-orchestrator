@@ -605,10 +605,17 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
     def _get_item_categories(indexer: Indexer, item: MediaItem) -> list[int]:
         """Resolve matching indexer categories for a media item."""
 
+        if isinstance(item, Movie):
+            target_category_type = "movie"
+        elif isinstance(item, (Show, Season, Episode)):
+            target_category_type = "tv"
+        else:
+            target_category_type = item.type
+
         categories = {
             cat_id
             for category in indexer.capabilities.categories
-            if category.type == item.type
+            if category.type == target_category_type
             or (category.type == "anime" and item.is_anime)
             for cat_id in category.ids
         }
@@ -775,6 +782,12 @@ class Prowlarr(ScraperService[ProwlarrConfig]):
 
         if self._is_anime_only_indexer(indexer) and not item.is_anime:
             logger.debug(f"Indexer {indexer.name} is anime only, skipping")
+            return {}
+
+        if not self._get_item_categories(indexer, item):
+            logger.debug(
+                f"Indexer {indexer.name} has no matching categories for {item.log_string}, skipping"
+            )
             return {}
 
         query_candidates = self._build_query_candidates(indexer, item)

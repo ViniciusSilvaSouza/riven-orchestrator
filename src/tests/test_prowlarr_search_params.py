@@ -66,3 +66,35 @@ def test_anime_only_indexer_detection_includes_known_anime_sources():
     assert Prowlarr._is_anime_only_indexer(SimpleNamespace(name="Tokyo Toshokan"))
     assert Prowlarr._is_anime_only_indexer(SimpleNamespace(name="Shana Project"))
     assert not Prowlarr._is_anime_only_indexer(SimpleNamespace(name="YTS"))
+
+
+def test_get_item_categories_maps_episode_to_tv_categories():
+    _, _, episode = _build_show_tree()
+    indexer = SimpleNamespace(
+        capabilities=SimpleNamespace(
+            categories=[
+                SimpleNamespace(type="movie", ids=[2000]),
+                SimpleNamespace(type="tv", ids=[5000, 5030]),
+                SimpleNamespace(type="anime", ids=[5070]),
+            ]
+        )
+    )
+
+    categories = Prowlarr._get_item_categories(indexer, episode)
+    assert sorted(categories) == [5000, 5030]
+
+
+def test_get_item_categories_includes_anime_bucket_for_anime_episode():
+    _, _, episode = _build_show_tree()
+    episode.is_anime = True
+    indexer = SimpleNamespace(
+        capabilities=SimpleNamespace(
+            categories=[
+                SimpleNamespace(type="tv", ids=[5000]),
+                SimpleNamespace(type="anime", ids=[5070]),
+            ]
+        )
+    )
+
+    categories = Prowlarr._get_item_categories(indexer, episode)
+    assert sorted(categories) == [5000, 5070]
