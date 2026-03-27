@@ -222,3 +222,10 @@ class NotificationService(Runner[NotificationsModel, None, None]):
                 logger.debug("No external notification services configured")
         except Exception as e:
             logger.debug(f"Failed to send generic notification: {e}")
+
+    def send_alert(self, title: str, body: str):
+        """
+        Public helper for operational alerts (pipeline health, integrations, etc.).
+        """
+
+        self._notify_generic(title=title, body=body)

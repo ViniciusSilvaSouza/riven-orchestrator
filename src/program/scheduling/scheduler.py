@@ -47,6 +47,8 @@ class ProgramScheduler:
     def __init__(self, program: "Program") -> None:
         self.program = program
         self.scheduler = BackgroundScheduler()
+        self._last_pipeline_alert_at: datetime | None = None
+        self._last_pipeline_alert_key: str | None = None
 
     def start(self) -> None:
         """Create and start the background scheduler with all jobs registered."""
@@ -90,6 +92,7 @@ class ProgramScheduler:
         scheduled_functions[self._process_orchestrator_queue] = {
             "interval": settings_manager.settings.downloaders.orchestrator.shared_queue_poll_seconds
         }
+        scheduled_functions[self._check_pipeline_health] = {"interval": 10 * 60}
         scheduled_functions[self._prune_orchestrator_history] = {
             "interval": 60 * 60 * 6,
         }
@@ -210,6 +213,67 @@ class ProgramScheduler:
             )
         else:
             logger.log("NOT_FOUND", "No items required retrying")
+
+    def _check_pipeline_health(self) -> None:
+        """
+        Periodically evaluate pipeline health and emit actionable alerts.
+
+        This does not alter queue/retry policies; it only surfaces operational risk.
+        """
+
+        if not self.program.services:
+            return
+
+        snapshot = db_functions.get_pipeline_health_snapshot()
+        health = snapshot.get("health", {})
+        bottlenecks = snapshot.get("bottlenecks", {})
+
+        issues = list[str]()
+
+        if health.get("is_stalled") and int(health.get("indexed_backlog", 0)) >= 50:
+            issues.append(
+                "pipeline_stalled(indexed_backlog={}, last_completed={}m)".format(
+                    health.get("indexed_backlog", 0),
+                    health.get("minutes_since_last_completed"),
+                )
+            )
+
+        if int(bottlenecks.get("indexed_failed_attempts_ge_20", 0)) >= 100:
+            issues.append(
+                "high_failed_attempts(indexed_failed_attempts_ge_20={})".format(
+                    bottlenecks.get("indexed_failed_attempts_ge_20", 0)
+                )
+            )
+
+        if not issues:
+            return
+
+        now = datetime.now()
+        issue_key = "|".join(issues)
+        if (
+            self._last_pipeline_alert_key == issue_key
+            and self._last_pipeline_alert_at
+            and (now - self._last_pipeline_alert_at) < timedelta(minutes=60)
+        ):
+            return
+
+        self._last_pipeline_alert_at = now
+        self._last_pipeline_alert_key = issue_key
+
+        completion_time = snapshot.get("completion_time", {})
+        message = (
+            "Pipeline health alert:\n"
+            f"- issues: {', '.join(issues)}\n"
+            f"- completed_1h: {snapshot.get('throughput', {}).get('completed_1h', 0)}\n"
+            f"- p95_completion_hours: {completion_time.get('p95_hours')}\n"
+            f"- avg_indexed_age_hours: {snapshot.get('backlog_age', {}).get('avg_indexed_age_hours')}"
+        )
+
+        logger.warning(message)
+        self.program.services.notifications.send_alert(
+            title="Riven Pipeline Health Alert",
+            body=message,
+        )
 
     def _get_pending_scheduled_tasks(self, session: Session) -> Sequence[ScheduledTask]:
         """Return all pending scheduled tasks."""

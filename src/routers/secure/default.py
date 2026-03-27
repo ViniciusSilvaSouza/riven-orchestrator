@@ -294,6 +294,15 @@ class StatsResponse(BaseModel):
             description="List of dictionaries with 'year' and 'count' keys representing media item releases per year"
         ),
     ]
+    pipeline_health: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "Operational pipeline health snapshot containing throughput, "
+                "completion-time percentiles, backlog age, and bottleneck counters."
+            )
+        ),
+    ]
 
 
 @router.get(
@@ -305,10 +314,10 @@ async def get_stats() -> StatsResponse:
     """
     Produce aggregated statistics for the media library and its items.
 
-    The response includes total counts for media items, movies, shows, seasons, and episodes; the total number of filesystem symlinks (determined by existence of FilesystemEntry records linked to movie or episode items); a mapping of each state to its item count; the number of incomplete items; and a mapping of incomplete item IDs to their scraped attempt counts.
+    The response includes total counts for media items, movies, shows, seasons, and episodes; the total number of filesystem symlinks (determined by existence of FilesystemEntry records linked to movie or episode items); a mapping of each state to its item count; the number of incomplete items; and an operational pipeline health snapshot with throughput/latency/backlog indicators.
 
     Returns:
-        StatsResponse: Aggregated statistics with keys `total_items`, `total_movies`, `total_shows`, `total_seasons`, `total_episodes`, `total_symlinks`, `incomplete_items`, `incomplete_retries`, and `states`.
+        StatsResponse: Aggregated statistics for dashboarding and operational diagnostics.
     """
 
     with db_session() as session:
@@ -364,24 +373,9 @@ async def get_stats() -> StatsResponse:
             for year, count in media_year_result:
                 media_year_releases.append({"year": year, "count": count})
 
-            # Use a server-side cursor for batch processing
-            batch_size = 1000
-            incomplete_retries = dict[int, int]()
-
-            result = conn.execute(
-                select(MediaItem.id, MediaItem.scraped_times).where(
-                    MediaItem.last_state != States.Completed
-                )
-            )
-
-            while True:
-                batch = result.fetchmany(batch_size)
-
-                if not batch:
-                    break
-
-                for media_item_id, scraped_times in batch:
-                    incomplete_retries[media_item_id] = scraped_times
+            incomplete_items = conn.execute(
+                select(func.count(MediaItem.id)).where(MediaItem.last_state != States.Completed)
+            ).scalar_one()
 
             states = dict[States, int]()
 
@@ -399,10 +393,11 @@ async def get_stats() -> StatsResponse:
         total_seasons=total_seasons,
         total_episodes=total_episodes,
         total_symlinks=total_symlinks,
-        incomplete_items=len(incomplete_retries),
+        incomplete_items=incomplete_items,
         states=states,
         activity=activity,
         media_year_releases=media_year_releases,
+        pipeline_health=db_functions.get_pipeline_health_snapshot(session=session),
     )
 
 

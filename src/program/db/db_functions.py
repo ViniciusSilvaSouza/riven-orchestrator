@@ -267,6 +267,148 @@ def retry_library(session: Session | None = None) -> Sequence[int]:
         return ids
 
 
+def get_pipeline_health_snapshot(session: Session | None = None) -> dict[str, Any]:
+    """
+    Return aggregated pipeline health metrics used by dashboarding and alerting.
+
+    The snapshot is intentionally compact and focused on operational diagnosis:
+    - completion throughput and latency (requested -> completed);
+    - backlog pressure and age;
+    - failure concentration on indexed items.
+    """
+
+    from program.media.item import MediaItem
+
+    now = datetime.now()
+    one_hour_ago = now - timedelta(hours=1)
+    twenty_four_hours_ago = now - timedelta(hours=24)
+
+    with _maybe_session(session) as (s, _owns):
+        completion_duration_seconds = func.extract(
+            "epoch", MediaItem.scraped_at - MediaItem.requested_at
+        )
+
+        completion_metrics_row = s.execute(
+            select(
+                func.count(MediaItem.id).label("sample_size"),
+                func.avg(completion_duration_seconds).label("avg_seconds"),
+                func.percentile_cont(0.5)
+                .within_group(completion_duration_seconds)
+                .label("p50_seconds"),
+                func.percentile_cont(0.95)
+                .within_group(completion_duration_seconds)
+                .label("p95_seconds"),
+            )
+            .where(MediaItem.last_state == States.Completed)
+            .where(MediaItem.requested_at.is_not(None))
+            .where(MediaItem.scraped_at.is_not(None))
+            .where(MediaItem.scraped_at >= MediaItem.requested_at)
+        ).one()
+
+        indexed_age_seconds = func.extract("epoch", now - MediaItem.requested_at)
+        indexed_backlog_row = s.execute(
+            select(
+                func.count(MediaItem.id).label("indexed_backlog"),
+                func.avg(indexed_age_seconds).label("avg_age_seconds"),
+                func.max(indexed_age_seconds).label("max_age_seconds"),
+                func.count(MediaItem.id)
+                .filter(MediaItem.failed_attempts >= 10)
+                .label("failed_attempts_ge_10"),
+                func.count(MediaItem.id)
+                .filter(MediaItem.failed_attempts >= 15)
+                .label("failed_attempts_ge_15"),
+                func.count(MediaItem.id)
+                .filter(MediaItem.failed_attempts >= 20)
+                .label("failed_attempts_ge_20"),
+            )
+            .where(MediaItem.last_state == States.Indexed)
+            .where(MediaItem.requested_at.is_not(None))
+        ).one()
+
+        throughput_row = s.execute(
+            select(
+                func.count(MediaItem.id)
+                .filter(MediaItem.last_state == States.Completed)
+                .filter(MediaItem.scraped_at >= one_hour_ago)
+                .label("completed_1h"),
+                func.count(MediaItem.id)
+                .filter(MediaItem.last_state == States.Completed)
+                .filter(MediaItem.scraped_at >= twenty_four_hours_ago)
+                .label("completed_24h"),
+                func.count(MediaItem.id)
+                .filter(MediaItem.last_state == States.Indexed)
+                .filter(MediaItem.indexed_at >= one_hour_ago)
+                .label("indexed_1h"),
+                func.count(MediaItem.id)
+                .filter(MediaItem.last_state == States.Indexed)
+                .filter(MediaItem.indexed_at >= twenty_four_hours_ago)
+                .label("indexed_24h"),
+            )
+        ).one()
+
+        last_completed_at = s.execute(
+            select(func.max(MediaItem.scraped_at)).where(
+                MediaItem.last_state == States.Completed
+            )
+        ).scalar_one()
+
+        minutes_since_last_completed = None
+        if last_completed_at:
+            minutes_since_last_completed = int(
+                (now - last_completed_at).total_seconds() // 60
+            )
+
+        indexed_backlog = int(indexed_backlog_row.indexed_backlog or 0)
+        stalled = bool(
+            indexed_backlog > 0
+            and minutes_since_last_completed is not None
+            and minutes_since_last_completed >= 60
+        )
+
+        def _to_hours(value_seconds: Any) -> float | None:
+            if value_seconds is None:
+                return None
+            return round(float(value_seconds) / 3600, 2)
+
+        return {
+            "health": {
+                "is_stalled": stalled,
+                "minutes_since_last_completed": minutes_since_last_completed,
+                "last_completed_at": (
+                    last_completed_at.isoformat() if last_completed_at else None
+                ),
+                "indexed_backlog": indexed_backlog,
+            },
+            "throughput": {
+                "completed_1h": int(throughput_row.completed_1h or 0),
+                "completed_24h": int(throughput_row.completed_24h or 0),
+                "indexed_1h": int(throughput_row.indexed_1h or 0),
+                "indexed_24h": int(throughput_row.indexed_24h or 0),
+            },
+            "completion_time": {
+                "sample_size": int(completion_metrics_row.sample_size or 0),
+                "avg_hours": _to_hours(completion_metrics_row.avg_seconds),
+                "p50_hours": _to_hours(completion_metrics_row.p50_seconds),
+                "p95_hours": _to_hours(completion_metrics_row.p95_seconds),
+            },
+            "backlog_age": {
+                "avg_indexed_age_hours": _to_hours(indexed_backlog_row.avg_age_seconds),
+                "max_indexed_age_hours": _to_hours(indexed_backlog_row.max_age_seconds),
+            },
+            "bottlenecks": {
+                "indexed_failed_attempts_ge_10": int(
+                    indexed_backlog_row.failed_attempts_ge_10 or 0
+                ),
+                "indexed_failed_attempts_ge_15": int(
+                    indexed_backlog_row.failed_attempts_ge_15 or 0
+                ),
+                "indexed_failed_attempts_ge_20": int(
+                    indexed_backlog_row.failed_attempts_ge_20 or 0
+                ),
+            },
+        }
+
+
 def create_calendar(session: Session | None = None) -> dict[int, dict[str, Any]]:
     """
     Create a calendar of all upcoming/ongoing items in the library.
