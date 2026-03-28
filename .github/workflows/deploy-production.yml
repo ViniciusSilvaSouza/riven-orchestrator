@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Image tag to deploy (e.g. v1.2.3 or latest)"
+        description: "Image tag to deploy (e.g. v1.2.3 or stable)"
         required: true
-        default: "latest"
+        default: "stable"
 
 jobs:
   deploy:
@@ -32,7 +32,8 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           IMAGE_TAG: ${{ steps.vars.outputs.tag }}
-          IMAGE_REPO: ghcr.io/${{ github.repository }}
+          BACKEND_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/riven-multi-debrid-queue-orchestrator-backend
+          FRONTEND_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/riven-multi-debrid-queue-orchestrator-frontend
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           GHCR_USER: ${{ secrets.GHCR_USER }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
@@ -41,12 +42,13 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script_stop: true
-          envs: IMAGE_TAG,IMAGE_REPO,DEPLOY_PATH,GHCR_USER,GHCR_TOKEN
+          envs: IMAGE_TAG,BACKEND_IMAGE_REPO,FRONTEND_IMAGE_REPO,DEPLOY_PATH,GHCR_USER,GHCR_TOKEN
           script: |
             set -eu
             cd "$DEPLOY_PATH"
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            export RIVEN_IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
-            docker compose -f docker-compose.prod.yml pull riven
-            docker compose -f docker-compose.prod.yml up -d riven
+            export RIVEN_IMAGE="${BACKEND_IMAGE_REPO}:${IMAGE_TAG}"
+            export RIVEN_FRONTEND_IMAGE="${FRONTEND_IMAGE_REPO}:${IMAGE_TAG}"
+            docker compose -f docker-compose.prod.yml pull riven riven_frontend
+            docker compose -f docker-compose.prod.yml up -d riven riven_frontend
             docker compose -f docker-compose.prod.yml ps

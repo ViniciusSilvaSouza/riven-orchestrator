@@ -2,7 +2,7 @@ name: riven-prod
 
 services:
   riven:
-    image: ${RIVEN_IMAGE:-ghcr.io/owner/repo:latest}
+    image: ${RIVEN_IMAGE:-ghcr.io/owner/riven-multi-debrid-queue-orchestrator-backend:stable}
     container_name: riven
     restart: unless-stopped
     tty: true
@@ -35,6 +35,24 @@ services:
       - ${RIVEN_MOUNT_DIR:-./container_data/mount}:/mount:rshared,z
     depends_on:
       riven_postgres:
+        condition: service_healthy
+
+  riven_frontend:
+    image: ${RIVEN_FRONTEND_IMAGE:-ghcr.io/owner/riven-multi-debrid-queue-orchestrator-frontend:stable}
+    container_name: riven-frontend
+    restart: unless-stopped
+    ports:
+      - "${RIVEN_FRONTEND_PORT:-3000}:3000"
+    environment:
+      - BACKEND_URL=${RIVEN_FRONTEND_BACKEND_URL:-http://riven:8080}
+      - BACKEND_API_KEY=${API_KEY}
+      - DATABASE_URL=${RIVEN_FRONTEND_DATABASE_URL:-/riven/data/riven.db}
+      - AUTH_SECRET=${RIVEN_FRONTEND_AUTH_SECRET:?set in .env}
+      - ORIGIN=${RIVEN_FRONTEND_ORIGIN:-http://localhost:3000}
+    volumes:
+      - ${RIVEN_FRONTEND_DATA_DIR:-./container_data/riven_frontend}:/riven/data
+    depends_on:
+      riven:
         condition: service_healthy
 
   riven_postgres:
