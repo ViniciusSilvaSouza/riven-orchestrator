@@ -1,6 +1,6 @@
 # Homelab Deploy Pipeline (Fork)
 
-This fork publishes two GHCR images in your own account:
+This fork publishes two GHCR images in your own account by default:
 
 - `ghcr.io/<your-user>/riven-multi-debrid-queue-orchestrator-backend`
 - `ghcr.io/<your-user>/riven-multi-debrid-queue-orchestrator-frontend`
@@ -26,8 +26,25 @@ This fork publishes two GHCR images in your own account:
 - `DEPLOY_USER`
 - `DEPLOY_SSH_KEY`
 - `DEPLOY_PATH`
-- `GHCR_USER`
 - `GHCR_TOKEN` (PAT with `read:packages`)
+
+The workflow now derives the GHCR username from the backend repository owner automatically.
+
+## Optional: publish from the original repo into a different GHCR account
+
+If you need to keep committing in one GitHub account/repository but publish container
+images into another account temporarily, configure these in both repositories:
+
+- Repository variable: `GHCR_OWNER=<target-ghcr-username>`
+- Repository secret: `GHCR_PUBLISH_TOKEN=<PAT from the target account with write:packages>`
+
+With those configured, build workflows push to:
+
+- `ghcr.io/<GHCR_OWNER>/riven-multi-debrid-queue-orchestrator-backend`
+- `ghcr.io/<GHCR_OWNER>/riven-multi-debrid-queue-orchestrator-frontend`
+
+If `GHCR_OWNER` and `GHCR_PUBLISH_TOKEN` are not set, the workflows fall back to the
+repository owner and `GITHUB_TOKEN`.
 
 ## Server-side setup
 
