@@ -15,7 +15,6 @@ services:
     env_file:
       - .env
     environment:
-      API_KEY: 0123456789abcdef0123456789abcdef
       PUID: 1000
       PGID: 1000
       TZ: America/Sao_Paulo
@@ -62,11 +61,13 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     environment:
       BACKEND_URL: http://riven:8080
-      BACKEND_API_KEY: 0123456789abcdef0123456789abcdef
+      BACKEND_API_KEY: ${API_KEY:-0123456789abcdef0123456789abcdef}
       DATABASE_URL: /riven/data/riven.db
-      AUTH_SECRET: local-dev-riven-frontend-auth-secret
+      AUTH_SECRET: ${RIVEN_FRONTEND_AUTH_SECRET:-local-dev-riven-frontend-auth-secret}
       ORIGIN: http://localhost:3000
     volumes:
       - ./container_data/riven_frontend:/riven/data
@@ -127,10 +128,10 @@ services:
     environment:
       DATABASE_TYPE: sqlite
       DATABASE_PATH: /app/data/comet.db
-      ADMIN_DASHBOARD_PASSWORD: comet-dev
+      ADMIN_DASHBOARD_PASSWORD: ${COMET_ADMIN_PASSWORD:-comet-dev}
       SCRAPE_PROWLARR: both
       PROWLARR_URL: http://prowlarr:9696
-      PROWLARR_API_KEY: c666683268cf4af9b62bcbe0abe66aad
+      PROWLARR_API_KEY: ${RIVEN_SCRAPING_PROWLARR_API_KEY:-}
       SCRAPE_NYAA: both
       SCRAPE_ANIMETOSHO: both
       SCRAPE_SEADEX: both
